@@ -1,10 +1,13 @@
 <script lang="ts">
-  import { ChannelStore } from "./channel.svelte.ts";
+  import { ChannelStore, createChannel } from "./channel.svelte.ts";
 
   let path = $state(window.location.pathname);
   let channelStore: ChannelStore | null = $state(null);
   let input = $state("");
   let joinInput = $state("");
+  let creating = $state(false);
+  let createError: string | null = $state(null);
+  let messagesEl: HTMLDivElement | null = $state(null);
 
   function navigate(to: string) {
     history.pushState({}, "", to);
@@ -25,7 +28,6 @@
       channelStore = null;
       return;
     }
-    // validate channelId format (same as protocol)
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) {
       return;
     }
@@ -37,15 +39,34 @@
     };
   });
 
+  // auto-scroll
+  $effect(() => {
+    if (channelStore?.messages.length && messagesEl) {
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+  });
+
   async function handleSend() {
     if (!channelStore || !input.trim()) return;
     const ok = await channelStore.sendMessage(input);
     if (ok) input = "";
   }
 
-  function createRoom() {
-    const id = crypto.randomUUID().slice(0, 8);
-    navigate(`/r/${id}`);
+  async function createRoom() {
+    if (creating) return;
+    creating = true;
+    createError = null;
+    try {
+      const id = await createChannel();
+      navigate(`/r/${id}`);
+    } catch (e) {
+      createError = e instanceof Error ? e.message : String(e);
+      // fallback: local random for offline dev
+      const fallback = crypto.randomUUID().slice(0, 8);
+      navigate(`/r/${fallback}`);
+    } finally {
+      creating = false;
+    }
   }
 
   function joinRoom() {
@@ -55,6 +76,11 @@
       return;
     }
     navigate(`/r/${id}`);
+  }
+
+  function leaveRoom() {
+    channelStore?.disconnect();
+    navigate("/");
   }
 </script>
 
@@ -67,13 +93,17 @@
       <div class="mt-8 space-y-6">
         <div class="rounded-lg border p-6">
           <h2 class="font-semibold">Create a room</h2>
-          <p class="mt-1 text-sm text-zinc-500">Generates a random channel id. Share the link to invite.</p>
+          <p class="mt-1 text-sm text-zinc-500">Creates on server (create_channel). Share the link to invite.</p>
           <button
-            class="mt-4 rounded bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800"
+            class="mt-4 rounded bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
             onclick={createRoom}
+            disabled={creating}
           >
-            Create room
+            {creating ? "Creating..." : "Create room"}
           </button>
+          {#if createError}
+            <p class="mt-2 text-xs text-amber-600">Create failed, used fallback: {createError}</p>
+          {/if}
         </div>
 
         <div class="rounded-lg border p-6">
@@ -92,22 +122,24 @@
               Join
             </button>
           </div>
+          <p class="mt-2 text-xs text-zinc-400">Join strictly checks existence (channel_not_found if missing).</p>
         </div>
 
-        <p class="text-xs text-zinc-400">P0: transport + codec + channel state integrated. WS at {`{host}/ws`}.</p>
+        <p class="text-xs text-zinc-400">P1: message relay + reconnect + online count. WS at {`{host}/ws`}.</p>
       </div>
     </div>
   {:else if path.startsWith("/r/")}
     <div class="mx-auto flex h-screen max-w-xl flex-col p-4">
       <div class="flex items-center justify-between border-b pb-3">
-        <button class="text-sm text-zinc-600 hover:text-zinc-900" onclick={() => navigate("/")}>
-          ← Home
+        <button class="text-sm text-zinc-600 hover:text-zinc-900" onclick={leaveRoom}>
+          ← Leave
         </button>
         <div class="text-sm">
           <span class="font-medium">Room:</span> {channelId}
           {#if channelStore}
             <span class="ml-2 rounded bg-zinc-100 px-2 py-0.5 text-xs">
-              {channelStore.status} {channelStore.online ? `· ${channelStore.online} online` : ""}
+              {channelStore.status}
+              · {channelStore.online} online
             </span>
           {/if}
         </div>
@@ -130,16 +162,21 @@
           Invalid room id. Use 1-64 chars: a-z, A-Z, 0-9, _ -
         </div>
       {:else}
-        <div class="mt-3 flex-1 overflow-y-auto rounded border bg-zinc-50 p-3">
+        <div bind:this={messagesEl} class="mt-3 flex-1 overflow-y-auto rounded border bg-zinc-50 p-3">
           {#if channelStore && channelStore.messages.length === 0}
-            <p class="text-sm text-zinc-400">No messages yet. P0 echo server will echo your messages.</p>
-            <p class="mt-2 text-xs text-zinc-400">Status: {channelStore.status}</p>
+            <p class="text-sm text-zinc-400">No messages yet. Invite someone with the link.</p>
+            <p class="mt-2 text-xs text-zinc-400">Status: {channelStore?.status} · {channelStore?.online} online</p>
+            {#if channelStore?.status === "reconnecting"}
+              <p class="mt-1 text-xs text-amber-600">Reconnecting... (up to 10s backoff)</p>
+            {/if}
+            {#if channelStore?.error?.includes("channel_not_found")}
+              <p class="mt-2 text-xs text-red-600">Room not found. Ask creator to create it via Create.</p>
+            {/if}
           {:else if channelStore}
             <ul class="space-y-2">
-              {#each channelStore.messages as m (m.payload + m.from + Math.random())}
+              {#each channelStore.messages as m, i (i)}
                 <li class="rounded bg-white px-3 py-2 text-sm shadow-sm">
                   <span class="font-medium">{m.from}:</span> {m.payload}
-                  <span class="ml-2 text-xs text-zinc-400">{m.channelId}</span>
                 </li>
               {/each}
             </ul>
@@ -152,7 +189,7 @@
             placeholder="Type a message"
             bind:value={input}
             onkeydown={(e) => e.key === "Enter" && handleSend()}
-            disabled={!channelStore || channelStore.status !== "open"}
+            disabled={!channelStore || (channelStore.status !== "open" && channelStore.status !== "reconnecting")}
           />
           <button
             class="rounded bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-800 disabled:opacity-50"
@@ -163,7 +200,7 @@
           </button>
         </div>
         <p class="mt-2 text-xs text-zinc-400">
-          P0: plaintext via codec+transport+channel separation. E2EE is noop until P2.
+          P1: plaintext relay · WS lifecycle + Ping/Pong heartbeat authoritative leave · auto-reconnect 10s jitter
         </p>
       {/if}
     </div>

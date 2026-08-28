@@ -9,6 +9,65 @@ function getWsUrl(): string {
   return `${proto}//${location.host}/ws`;
 }
 
+export async function createChannel(): Promise<string> {
+  const transport = new Transport(getWsUrl(), { autoReconnect: false });
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const timeout = setTimeout(() => {
+      if (!done) {
+        done = true;
+        offMsg();
+        offStatus();
+        transport.disconnect();
+        reject(new Error("timeout creating channel"));
+      }
+    }, 5000);
+
+    const offMsg = transport.onRawMessage((raw) => {
+      let msg: AnyMessage;
+      try {
+        msg = decode(raw);
+      } catch {
+        return;
+      }
+      if (msg.type === "channel_created") {
+        done = true;
+        clearTimeout(timeout);
+        offMsg();
+        offStatus();
+        transport.disconnect();
+        resolve(msg.channelId);
+      } else if (msg.type === "error") {
+        done = true;
+        clearTimeout(timeout);
+        offMsg();
+        offStatus();
+        transport.disconnect();
+        reject(new Error(`${msg.code}: ${msg.message}`));
+      }
+    });
+
+    const offStatus = transport.onStatus((s) => {
+      if (s === "open") {
+        try {
+          transport.sendRaw(encode({ type: "create_channel" }));
+        } catch (e) {
+          done = true;
+          clearTimeout(timeout);
+          offMsg();
+          offStatus();
+          transport.disconnect();
+          reject(e instanceof Error ? e : new Error(String(e)));
+        }
+      } else if (s === "error") {
+        // wait for close or timeout
+      }
+    });
+
+    transport.connect();
+  });
+}
+
 export class ChannelStore {
   channelId: string = $state("");
   messages: BroadcastMessage[] = $state([]);
@@ -30,7 +89,6 @@ export class ChannelStore {
       this.status = s;
       if (s === "open") {
         this.error = null;
-        // auto-join on open
         this.sendJoin();
       }
     });
@@ -43,8 +101,6 @@ export class ChannelStore {
         this.error = e instanceof Error ? e.message : String(e);
         return;
       }
-      // P0: payload is plaintext, P2 will decrypt here
-      // For now, handle server messages
       switch (msg.type) {
         case "joined":
           this.online = msg.online;
@@ -54,7 +110,7 @@ export class ChannelStore {
           try {
             payload = await this.crypto.decrypt(payload);
           } catch {
-            // if decrypt fails, keep raw
+            // keep raw
           }
           this.messages = [...this.messages, { ...msg, payload }];
           break;
@@ -66,10 +122,9 @@ export class ChannelStore {
           this.error = `${msg.code}: ${msg.message}`;
           break;
         case "channel_created":
-          // not expected after join, but update id if needed
           break;
         case "left":
-          // handle peer left? For P0, ignore
+          // authoritative is online_count, ignore left
           break;
         default:
           break;
@@ -82,13 +137,13 @@ export class ChannelStore {
   }
 
   disconnect(): void {
-    if (this.channelId) {
-      try {
-        const raw = encode({ type: "leave_channel", channelId: this.channelId });
-        this.transport.sendRaw(raw);
-      } catch {
-        // ignore
-      }
+    // explicit leave is optional; authoritative is WS close + heartbeat
+    // we still try graceful leave for UX but server will handle via LeaveAll
+    try {
+      const raw = encode({ type: "leave_channel", channelId: this.channelId });
+      this.transport.sendRaw(raw);
+    } catch {
+      // ignore
     }
     this.transport.disconnect();
     this.unsubMessage?.();
@@ -100,7 +155,10 @@ export class ChannelStore {
   private sendJoin(): void {
     try {
       const raw = encode({ type: "join_channel", channelId: this.channelId });
-      this.transport.sendRaw(raw);
+      const ok = this.transport.sendRaw(raw);
+      if (!ok) {
+        // will be queued and retried on reconnect
+      }
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
     }
@@ -119,11 +177,10 @@ export class ChannelStore {
       const raw = encode({ type: "send_message", channelId: this.channelId, payload });
       const ok = this.transport.sendRaw(raw);
       if (!ok) {
-        this.error = "not connected";
+        this.error = "not connected (queued)";
         return false;
       }
-      // Optimistic local echo? For P0, server will echo or broadcast; we don't add locally.
-      // But if server is echo mode, message will come back as "message" with from.
+      this.error = null;
       return true;
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
