@@ -1,6 +1,6 @@
-# Private Chat — P0 Foundation
+# Private Chat — P1 Minimal Chat
 
-Lightweight browser-based E2EE private chat. P0 implements foundation: project structure, frontend/backend, shared protocol, WebSocket, Docker, tests.
+Lightweight browser-based E2EE private chat. P1 implements minimal chat: create/join/leave, message relay, reconnect, online count. P0 foundation already done.
 
 ## Principles
 
@@ -89,4 +89,4 @@ P0 `payload` is plaintext; P2 will be ciphertext. See `protocol/schema.json` and
 
 ## Roadmap
 
-P0 Foundation done — see `ROADMAP.md`. Next is P1 Minimal Chat (create/join/message/online).
+P0 Foundation done, P1 Minimal Chat done — see `ROADMAP.md`. Next is P2 E2EE.

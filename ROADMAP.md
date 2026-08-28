@@ -12,11 +12,11 @@
 
 ## P1 — Minimal Chat
 
-* [ ] Create room
-* [ ] Join/leave room
-* [ ] Message relay
-* [ ] Reconnect
-* [ ] Online count
+* [x] Create room
+* [x] Join/leave room
+* [x] Message relay
+* [x] Reconnect
+* [x] Online count
 
 ## P2 — E2EE
 
@@ -80,4 +80,4 @@
 
 ## Current
 
-**P0**
+**P1**
