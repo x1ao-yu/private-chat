@@ -1,0 +1,16 @@
+import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+import tailwindcss from "@tailwindcss/vite";
+
+export default defineConfig({
+  plugins: [tailwindcss(), svelte()],
+  server: {
+    proxy: {
+      "/ws": {
+        target: "ws://localhost:8080",
+        ws: true,
+      },
+      "/health": "http://localhost:8080",
+    },
+  },
+});
