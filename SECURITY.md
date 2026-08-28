@@ -26,6 +26,13 @@ E2EE does not automatically provide:
 
 Do not claim a security property unless the protocol and implementation actually provide it.
 
+## P1 Notes
+
+* `from` in `message` (`protocol/schema.json:106`) is an ephemeral **connection ID** (`peer-` + 4B random per WebSocket, `backend/internal/ws/transport.go:210`), regenerated on reconnect. It is **not** a stable user ID or identity; P6 will introduce identity keys. Do not treat `from` as authentication.
+* **No history persistence** is a design goal: server is relay-only, in-memory `backend/internal/channel/manager.go:11`, messages are not stored. Clients must not expect history on rejoin; P1 keeps this intentionally.
+* Minimal `rate_limited` (`protocol/schema.json:129`, `backend/internal/ws/limiter.go:1`): `create_channel` 5/min per-IP + per-conn, `send_message` 10/s per-conn burst 20 (fixed window, stdlib only). Exceeding returns `error rate_limited`.
+* Heartbeat uses native WebSocket Ping/Pong (`backend/internal/ws/transport.go:49`, 30s/5s timeout); no JSON heartbeat message.
+
 ## Security-Sensitive Changes
 
 Review carefully before implementing:

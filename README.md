@@ -79,12 +79,16 @@ docker compose up --build  # frontend :80, backend :8080
 Client → Server: `create_channel`, `join_channel`, `leave_channel`, `send_message`
 Server → Client: `channel_created`, `joined`, `left`, `message`, `online_count`, `error`
 
-P0 `payload` is plaintext; P2 will be ciphertext. See `protocol/schema.json` and `protocol/README.md`.
+`message.from` is an ephemeral connection ID (`peer-` + 4B random per WebSocket, regenerated on reconnect, `backend/internal/ws/transport.go:210`) — **not** a stable identity (P6). No history is persisted (relay-only, `backend/internal/channel/manager.go:11`); rejoin does not replay. Minimal `rate_limited` (`create 5/min per-IP+per-conn`, `send 10/s per-conn`).
+
+P1 `payload` is still plaintext; P2 will be ciphertext. See `protocol/schema.json` and `protocol/README.md`.
 
 ## Security Notes
 
 - Plaintext never logged server-side
 - `protocol/schema.json` validation enforced both sides (go-jsonschema UnmarshalJSON + TS codec)
+- `from` is per-connection, not identity; no history persistence by design
+- Minimal rate limiting: `create 5/min`, `send 10/s` (`backend/internal/ws/limiter.go:1`), heartbeat 30s Ping/Pong (`backend/internal/ws/transport.go:49`)
 - Production should use HTTPS/WSS and restrict `InsecureSkipVerify`
 
 ## Roadmap
