@@ -37,6 +37,8 @@ function assertChannelId(id: unknown): void {
 
 function assertPayload(p: unknown): void {
   if (typeof p !== "string") throw new Error("invalid payload: not string");
+  // 8192 is wire limit (payload string length on the wire), not plaintext limit.
+  // After E2EE, payload is base64url(iv).base64url(messageId).base64url(ct+tag); plaintext budget ~5-6k.
   if (p.length > 8192) throw new Error("payload too large");
 }
 
