@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/chat/protocol",
+  "title": "ChatProtocol",
+  "description": "Single source of truth for client<->server WebSocket messages. TS and Go types are generated.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/CreateChannel" },
+    { "$ref": "#/$defs/JoinChannel" },
+    { "$ref": "#/$defs/LeaveChannel" },
+    { "$ref": "#/$defs/SendMessage" },
+    { "$ref": "#/$defs/ChannelCreated" },
+    { "$ref": "#/$defs/Joined" },
+    { "$ref": "#/$defs/Left" },
+    { "$ref": "#/$defs/BroadcastMessage" },
+    { "$ref": "#/$defs/OnlineCount" },
+    { "$ref": "#/$defs/Error" }
+  ],
+  "$defs": {
+    "CreateChannel": {
+      "type": "object",
+      "title": "CreateChannel",
+      "description": "Client -> Server: request to create a new channel",
+      "properties": {
+        "type": { "type": "string", "enum": ["create_channel"] }
+      },
+      "required": ["type"],
+      "additionalProperties": false
+    },
+    "JoinChannel": {
+      "type": "object",
+      "title": "JoinChannel",
+      "properties": {
+        "type": { "type": "string", "enum": ["join_channel"] },
+        "channelId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{1,64}$",
+          "description": "Channel identifier"
+        }
+      },
+      "required": ["type", "channelId"],
+      "additionalProperties": false
+    },
+    "LeaveChannel": {
+      "type": "object",
+      "title": "LeaveChannel",
+      "properties": {
+        "type": { "type": "string", "enum": ["leave_channel"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" }
+      },
+      "required": ["type", "channelId"],
+      "additionalProperties": false
+    },
+    "SendMessage": {
+      "type": "object",
+      "title": "SendMessage",
+      "description": "Client -> Server: send plaintext (P0) / ciphertext (P2) to channel",
+      "properties": {
+        "type": { "type": "string", "enum": ["send_message"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "payload": { "type": "string", "maxLength": 8192 }
+      },
+      "required": ["type", "channelId", "payload"],
+      "additionalProperties": false
+    },
+    "ChannelCreated": {
+      "type": "object",
+      "title": "ChannelCreated",
+      "description": "Server -> Client: channel created",
+      "properties": {
+        "type": { "type": "string", "enum": ["channel_created"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" }
+      },
+      "required": ["type", "channelId"],
+      "additionalProperties": false
+    },
+    "Joined": {
+      "type": "object",
+      "title": "Joined",
+      "properties": {
+        "type": { "type": "string", "enum": ["joined"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "online": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["type", "channelId", "online"],
+      "additionalProperties": false
+    },
+    "Left": {
+      "type": "object",
+      "title": "Left",
+      "properties": {
+        "type": { "type": "string", "enum": ["left"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" }
+      },
+      "required": ["type", "channelId"],
+      "additionalProperties": false
+    },
+    "BroadcastMessage": {
+      "type": "object",
+      "title": "BroadcastMessage",
+      "description": "Server -> Client: broadcast message from another member",
+      "properties": {
+        "type": { "type": "string", "enum": ["message"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "payload": { "type": "string", "maxLength": 8192 },
+        "from": { "type": "string", "description": "Ephemeral sender id (not persisted)" }
+      },
+      "required": ["type", "channelId", "payload", "from"],
+      "additionalProperties": false
+    },
+    "OnlineCount": {
+      "type": "object",
+      "title": "OnlineCount",
+      "properties": {
+        "type": { "type": "string", "enum": ["online_count"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "count": { "type": "integer", "minimum": 0 }
+      },
+      "required": ["type", "channelId", "count"],
+      "additionalProperties": false
+    },
+    "Error": {
+      "type": "object",
+      "title": "Error",
+      "properties": {
+        "type": { "type": "string", "enum": ["error"] },
+        "code": {
+          "type": "string",
+          "enum": ["invalid_message", "channel_not_found", "rate_limited", "internal_error"]
+        },
+        "message": { "type": "string" }
+      },
+      "required": ["type", "code", "message"],
+      "additionalProperties": false
+    }
+  }
+}
