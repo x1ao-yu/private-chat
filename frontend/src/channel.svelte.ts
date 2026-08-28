@@ -106,11 +106,13 @@ export class ChannelStore {
           this.online = msg.online;
           break;
         case "message": {
-          let payload = msg.payload;
+          let payload: string;
           try {
-            payload = await this.crypto.decrypt(payload);
+            payload = await this.crypto.decrypt(msg.payload);
           } catch {
-            // keep raw
+            this.error = "decrypt failed (wrong key or corrupted)";
+            // show placeholder instead of raw ciphertext
+            payload = "⚠️ decrypt failed";
           }
           this.messages = [...this.messages, { ...msg, payload }];
           break;
