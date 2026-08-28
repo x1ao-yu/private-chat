@@ -20,10 +20,10 @@
 
 ## P2 — E2EE
 
-* [ ] Client-side key generation
-* [ ] Message encryption/decryption
-* [ ] Encrypted message protocol
-* [ ] Verify server sees ciphertext only
+* [x] Client-side key generation
+* [x] Message encryption/decryption
+* [x] Encrypted message protocol
+* [x] Verify server sees ciphertext only
 
 ## P3 — Room Keys
 
@@ -80,4 +80,4 @@
 
 ## Current
 
-**P1**
+**P2**
