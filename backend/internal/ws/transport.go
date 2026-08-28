@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
+	"time"
 
 	"chat/internal/channel"
 	"chat/internal/protocol"
@@ -23,7 +24,7 @@ func NewServer(m *channel.Manager) *Server {
 }
 
 // Handler upgrades and handles a WS connection. It validates via codec, routes via channel manager,
-// and never logs payload.
+// and never logs payload. Leave authority is WS lifecycle + native Ping/Pong heartbeat.
 func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true,
@@ -33,11 +34,10 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() {
-		s.Manager.LeaveAll(c)
-		// broadcast online_count for affected channels
-		// (we need to know which channels were affected before leave; LeaveAll returns them)
-		// but we already left, so we need to broadcast after. We capture before leave above.
-		// Instead, handle LeaveAll with broadcast inside loop on close.
+		affected := s.Manager.LeaveAll(c)
+		for _, ch := range affected {
+			broadcastOnlineCount(context.Background(), s.Manager, ch)
+		}
 		c.Close(websocket.StatusNormalClosure, "")
 	}()
 
@@ -45,6 +45,28 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	clientID := generateClientID()
+
+	// heartbeat via native Ping/Pong control frames (no JSON)
+	pingCtx, pingCancel := context.WithCancel(context.Background())
+	defer pingCancel()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingCtx.Done():
+				return
+			case <-ticker.C:
+				pCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				err := c.Ping(pCtx)
+				cancel()
+				if err != nil {
+					_ = c.Close(websocket.StatusGoingAway, "heartbeat timeout")
+					return
+				}
+			}
+		}
+	}()
 
 	for {
 		msgType, data, err := c.Read(ctx)
@@ -63,6 +85,10 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 		case *protocol.CreateChannel:
 			_ = v
 			id := channel.GenerateID()
+			// collision guard (P1 hardening)
+			for i := 0; i < 3 && s.Manager.Exists(id); i++ {
+				id = channel.GenerateID()
+			}
 			s.Manager.Join(id, c, clientID)
 			resp := protocol.ChannelCreated{
 				Type:      protocol.ChannelCreatedTypeChannelCreated,
@@ -81,6 +107,10 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 				_ = c.Write(ctx, websocket.MessageText, b)
 			}
 		case *protocol.JoinChannel:
+			if !s.Manager.Exists(v.ChannelId) {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			}
 			s.Manager.Join(v.ChannelId, c, clientID)
 			joined := protocol.Joined{
 				Type:      protocol.JoinedTypeJoined,
@@ -103,8 +133,17 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 			}
 			broadcastOnlineCount(ctx, s.Manager, v.ChannelId)
 		case *protocol.SendMessage:
-			// Verify sender is in channel (if not, auto-join? For P0, allow but warn)
-			// Broadcast as message with from
+			if !s.Manager.Exists(v.ChannelId) {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			}
+			if snap := s.Manager.Snapshot(v.ChannelId); snap == nil {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			} else if _, ok := snap[c]; !ok {
+				_ = writeError(ctx, c, "channel_not_found", "not a member")
+				continue
+			}
 			bcast := protocol.BroadcastMessage{
 				Type:      protocol.BroadcastMessageTypeMessage,
 				ChannelId: v.ChannelId,
@@ -130,9 +169,11 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 func broadcast(ctx context.Context, m *channel.Manager, channelID string, data []byte) {
 	snapshot := m.Snapshot(channelID)
 	for conn := range snapshot {
-		// Use background context with timeout to avoid blocking on slow clients
-		_ = conn.Write(ctx, websocket.MessageText, data)
+		cCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = conn.Write(cCtx, websocket.MessageText, data)
+		cancel()
 	}
+	_ = ctx // keep signature compatible, heartbeat uses background
 }
 
 func broadcastOnlineCount(ctx context.Context, m *channel.Manager, channelID string) {

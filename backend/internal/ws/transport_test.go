@@ -165,6 +165,157 @@ func TestJoinAndBroadcast(t *testing.T) {
 	}
 }
 
+func TestDisconnectBroadcastsOnlineCount(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	c1, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial c1: %v", err)
+	}
+	defer c1.Close(websocket.StatusNormalClosure, "")
+	c2, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial c2: %v", err)
+	}
+
+	// c1 creates
+	if err := c1.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, data, _ := c1.Read(ctx)
+	var cc protocol.ChannelCreated
+	_ = json.Unmarshal(data, &cc)
+	_, _, _ = c1.Read(ctx) // joined
+	chID := cc.ChannelId
+
+	// c2 joins
+	joinMsg, _ := json.Marshal(map[string]string{"type": "join_channel", "channelId": chID})
+	if err := c2.Write(ctx, websocket.MessageText, joinMsg); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = c2.Read(ctx) // joined
+	_, _, _ = c2.Read(ctx) // online_count 2
+	_, _, _ = c1.Read(ctx) // online_count 2
+
+	// c2 disconnects (should trigger LeaveAll + broadcast)
+	_ = c2.Close(websocket.StatusNormalClosure, "")
+	// c1 should receive online_count 1
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	_, data, err = c1.Read(ctx2)
+	if err != nil {
+		t.Fatalf("c1 read after c2 disconnect: %v", err)
+	}
+	var oc protocol.OnlineCount
+	if err := json.Unmarshal(data, &oc); err != nil {
+		t.Fatalf("online_count unmarshal: %v data %s", err, string(data))
+	}
+	if oc.Count != 1 || oc.ChannelId != chID {
+		t.Fatalf("expected count 1 got %+v", oc)
+	}
+}
+
+func TestJoinNonExistent(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"join_channel","channelId":"nonexistent123"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	var e protocol.Error
+	if err := json.Unmarshal(data, &e); err != nil {
+		t.Fatalf("error unmarshal: %v", err)
+	}
+	if e.Code != protocol.ErrorCodeChannelNotFound {
+		t.Fatalf("expected channel_not_found got %v", e.Code)
+	}
+}
+
+func TestSendWithoutJoin(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c1, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c1.Close(websocket.StatusNormalClosure, "")
+	c2, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.Close(websocket.StatusNormalClosure, "")
+
+	// c1 creates channel
+	if err := c1.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, data, _ := c1.Read(ctx)
+	var cc protocol.ChannelCreated
+	_ = json.Unmarshal(data, &cc)
+	_, _, _ = c1.Read(ctx)
+	chID := cc.ChannelId
+
+	// c2 tries to send without joining
+	send := map[string]string{"type": "send_message", "channelId": chID, "payload": "hello"}
+	b, _ := json.Marshal(send)
+	if err := c2.Write(ctx, websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err = c2.Read(ctx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	var e protocol.Error
+	if err := json.Unmarshal(data, &e); err != nil {
+		t.Fatalf("error unmarshal: %v", err)
+	}
+	if e.Code != protocol.ErrorCodeChannelNotFound {
+		t.Fatalf("expected channel_not_found for send without join, got %v", e.Code)
+	}
+}
+
+func TestSendToNonExistent(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	b, _ := json.Marshal(map[string]string{"type": "send_message", "channelId": "ghost12345", "payload": "hi"})
+	if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var e protocol.Error
+	_ = json.Unmarshal(data, &e)
+	if e.Code != protocol.ErrorCodeChannelNotFound {
+		t.Fatalf("expected channel_not_found, got %v", e.Code)
+	}
+}
+
 func TestInvalidMessage(t *testing.T) {
 	url, closeFn := newTestServer(t)
 	defer closeFn()
