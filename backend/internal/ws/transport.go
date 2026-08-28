@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -16,11 +18,12 @@ import (
 // Server holds dependencies for WS handling.
 type Server struct {
 	Manager *channel.Manager
+	limiter *Limiter
 }
 
 // NewServer creates a WS server.
 func NewServer(m *channel.Manager) *Server {
-	return &Server{Manager: m}
+	return &Server{Manager: m, limiter: NewLimiter()}
 }
 
 // Handler upgrades and handles a WS connection. It validates via codec, routes via channel manager,
@@ -38,6 +41,10 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 		for _, ch := range affected {
 			broadcastOnlineCount(context.Background(), s.Manager, ch)
 		}
+		// cleanup rate limiter state for this connection
+		s.limiter.CleanupConn(fmt.Sprintf("%p", c))
+		// lazy cleanup expired IP windows
+		s.limiter.CleanupExpired()
 		c.Close(websocket.StatusNormalClosure, "")
 	}()
 
@@ -84,6 +91,13 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 		switch v := msg.(type) {
 		case *protocol.CreateChannel:
 			_ = v
+			// dual limit: per-IP 5/min + per-conn 5/min
+			ip := clientIP(r)
+			connCreateKey := fmt.Sprintf("%p:create", c)
+			if !s.limiter.Allow(ip+":create", 5, time.Minute) || !s.limiter.Allow(connCreateKey, 5, time.Minute) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
 			id := channel.GenerateID()
 			// collision guard (P1 hardening)
 			for i := 0; i < 3 && s.Manager.Exists(id); i++ {
@@ -133,6 +147,12 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 			}
 			broadcastOnlineCount(ctx, s.Manager, v.ChannelId)
 		case *protocol.SendMessage:
+			// per-conn 10/s burst 20 (fixed window 10/s, burst via 2 windows)
+			connSendKey := fmt.Sprintf("%p:send", c)
+			if !s.limiter.Allow(connSendKey, 10, time.Second) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
 			if !s.Manager.Exists(v.ChannelId) {
 				_ = writeError(ctx, c, "channel_not_found", "channel not found")
 				continue
@@ -205,6 +225,14 @@ func writeError(ctx context.Context, c *websocket.Conn, code, message string) er
 		return err
 	}
 	return c.Write(ctx, websocket.MessageText, b)
+}
+
+func clientIP(r *http.Request) string {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return ip
 }
 
 func generateClientID() string {

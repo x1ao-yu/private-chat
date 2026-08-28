@@ -316,6 +316,85 @@ func TestSendToNonExistent(t *testing.T) {
 	}
 }
 
+func TestCreateRateLimited(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	// 5 creates should succeed (per-conn 5/min + per-IP 5/min)
+	for i := 0; i < 5; i++ {
+		if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		_, _, _ = c.Read(ctx) // channel_created
+		_, _, _ = c.Read(ctx) // joined
+	}
+	// 6th should be rate_limited
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read rate_limited: %v", err)
+	}
+	var e protocol.Error
+	_ = json.Unmarshal(data, &e)
+	if e.Code != protocol.ErrorCodeRateLimited {
+		t.Fatalf("expected rate_limited, got %v", e.Code)
+	}
+}
+
+func TestSendRateLimited(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	// create channel
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, data, _ := c.Read(ctx)
+	var cc protocol.ChannelCreated
+	_ = json.Unmarshal(data, &cc)
+	_, _, _ = c.Read(ctx)
+	chID := cc.ChannelId
+
+	// send 10 messages should succeed (per-conn 10/s)
+	for i := 0; i < 10; i++ {
+		b, _ := json.Marshal(map[string]string{"type": "send_message", "channelId": chID, "payload": "hi"})
+		if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		_, _, _ = c.Read(ctx) // broadcast
+	}
+	// 11th should be rate_limited
+	b, _ := json.Marshal(map[string]string{"type": "send_message", "channelId": chID, "payload": "hi"})
+	if err := c.Write(ctx, websocket.MessageText, b); err != nil {
+		t.Fatal(err)
+	}
+	_, data, err = c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read rate_limited: %v", err)
+	}
+	var e protocol.Error
+	_ = json.Unmarshal(data, &e)
+	if e.Code != protocol.ErrorCodeRateLimited {
+		t.Fatalf("expected rate_limited, got %v", e.Code)
+	}
+}
+
 func TestInvalidMessage(t *testing.T) {
 	url, closeFn := newTestServer(t)
 	defer closeFn()
