@@ -103,7 +103,8 @@
         "type": { "type": "string", "enum": ["message"] },
         "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
         "payload": { "type": "string", "maxLength": 8192 },
-        "from": { "type": "string", "description": "Ephemeral sender id (not persisted)" }
+        "from": { "type": "string", "description": "Ephemeral sender id (not persisted)" },
+        "self": { "type": "boolean", "description": "True if this message is from self (per-recipient)" }
       },
       "required": ["type", "channelId", "payload", "from"],
       "additionalProperties": false

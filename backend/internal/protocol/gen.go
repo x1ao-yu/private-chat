@@ -19,6 +19,9 @@ type BroadcastMessage struct {
 	// Payload corresponds to the JSON schema field "payload".
 	Payload string `json:"payload"`
 
+	// True if this message is from self (per-recipient)
+	Self *bool `json:"self,omitempty,omitzero"`
+
 	// Type corresponds to the JSON schema field "type".
 	Type BroadcastMessageType `json:"type"`
 }

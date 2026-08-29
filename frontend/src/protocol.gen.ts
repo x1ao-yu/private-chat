@@ -72,6 +72,10 @@ export interface BroadcastMessage {
    * Ephemeral sender id (not persisted)
    */
   from: string;
+  /**
+   * True if this message is from self (per-recipient)
+   */
+  self?: boolean;
 }
 export interface OnlineCount {
   type: "online_count";
