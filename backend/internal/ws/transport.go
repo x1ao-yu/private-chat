@@ -155,17 +155,25 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 				_ = writeError(ctx, c, "channel_not_found", "not a member")
 				continue
 			}
-			bcast := protocol.BroadcastMessage{
-				Type:      protocol.BroadcastMessageTypeMessage,
-				ChannelId: v.ChannelId,
-				Payload:   v.Payload,
-				From:      clientID,
+			// per-recipient self flag
+			snapshot := s.Manager.Snapshot(v.ChannelId)
+			for conn := range snapshot {
+				isSelf := conn == c
+				bcast := protocol.BroadcastMessage{
+					Type:      protocol.BroadcastMessageTypeMessage,
+					ChannelId: v.ChannelId,
+					Payload:   v.Payload,
+					From:      clientID,
+					Self:      &isSelf,
+				}
+				b, err := Encode(bcast)
+				if err != nil {
+					continue
+				}
+				cCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = conn.Write(cCtx, websocket.MessageText, b)
+				cancel()
 			}
-			b, err := Encode(bcast)
-			if err != nil {
-				continue
-			}
-			broadcast(ctx, s.Manager, v.ChannelId, b)
 		default:
 			_ = writeError(ctx, c, "invalid_message", "unsupported message type")
 		}
