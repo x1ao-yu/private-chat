@@ -4,12 +4,12 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- CSP: prod script-src 'self', no unsafe-inline; dev may relax after measurement -->
+    <!-- CSP: script-src 'self' strict; style-src needs unsafe-inline for Vite dev style injection + avatar inline color (style injection only, low risk); frame-ancestors only valid via HTTP header (nginx.conf) -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'"
     />
-    <title>frontend</title>
+    <title>Private Chat</title>
   </head>
   <body>
     <div id="app"></div>
