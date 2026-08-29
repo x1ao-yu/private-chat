@@ -9,6 +9,7 @@
     importRoomKey,
     createAesGcmCrypto,
     isCryptoAvailable,
+    isRoomKeyB64,
   } from "./e2ee.ts";
   import { parseInvite, parseKeyFromHash } from "./invite.ts";
 
@@ -175,6 +176,14 @@
   }
   function joinRoom() {
     const { id, key } = parseInvite(joinInput);
+    // a 43-char base64url string satisfies the roomId pattern; reject it before it
+    // can be sent to the server as a channelId (key material must never leave the device)
+    if (isRoomKeyB64(id)) {
+      alert(
+        "This looks like a room key, not an invite link. Paste the full invite link (/r/<id>#k=...) or open the room first and paste the key there."
+      );
+      return;
+    }
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) {
       alert("Invalid room id. Use 1-64 chars: a-z, A-Z, 0-9, _ -");
       return;

@@ -23,6 +23,11 @@ export function isCryptoAvailable(): boolean {
   );
 }
 
+// a 32-byte key encoded as unpadded base64url is exactly 43 chars
+export function isRoomKeyB64(s: string): boolean {
+  return /^[A-Za-z0-9_-]{43}$/.test(s);
+}
+
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) {
