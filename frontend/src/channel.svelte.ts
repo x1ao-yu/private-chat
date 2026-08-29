@@ -68,9 +68,11 @@ export async function createChannel(): Promise<string> {
   });
 }
 
+export type ChatMessage = BroadcastMessage & { ts: number };
+
 export class ChannelStore {
   channelId: string = $state("");
-  messages: BroadcastMessage[] = $state([]);
+  messages: ChatMessage[] = $state([]);
   online: number = $state(0);
   status: TransportStatus = $state("idle");
   error: string | null = $state(null);
@@ -114,7 +116,8 @@ export class ChannelStore {
             // show placeholder instead of raw ciphertext
             payload = "⚠️ decrypt failed";
           }
-          this.messages = [...this.messages, { ...msg, payload }];
+          const ts = Date.now();
+          this.messages = [...this.messages, { ...msg, payload, ts }];
           break;
         }
         case "online_count":
