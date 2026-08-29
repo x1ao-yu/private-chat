@@ -187,7 +187,10 @@
     else navigate(`/r/${id}`);
   }
   function leaveRoom() {
-    if (channelId) roomKeys.delete(channelId);
+    if (channelId) {
+      roomKeys.delete(channelId);
+      roomHistory = roomHistory.filter((r) => r.id !== channelId);
+    }
     keyInput = "";
     channelStore?.disconnect();
     navigate("/");
@@ -304,19 +307,6 @@
             </svg>
             Copy link
           </button>
-          <button
-            class="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 hover:text-red-600"
-            title="Clear local chat"
-            aria-label="Clear local chat"
-            onclick={clearLocalMessages}
-          >
-            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="3 6 5 6 21 6" />
-              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-              <path d="M10 11v6M14 11v6" />
-              <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-            </svg>
-          </button>
         </div>
       </div>
 
@@ -358,7 +348,7 @@
               <div>
                 <div class="mb-1 text-sm font-medium text-zinc-700">System</div>
                 <div class="inline-block rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-2.5 text-sm">
-                  Hello, I'm your private room. Invite someone with the link.
+                  🔒 您身处私密聊天室。消息采用端到端加密，仅限本聊天室的参与者查看，通过链接邀请他人加入。
                 </div>
                 <div class="mt-1 text-xs text-zinc-400">
                   {channelStore.status} · {channelStore.online} online
