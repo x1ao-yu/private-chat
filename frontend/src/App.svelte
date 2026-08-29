@@ -88,8 +88,8 @@
   async function getCryptoForChannel(id: string, hashB64: string | null) {
     if (!isCryptoAvailable()) throw new Error("Web Crypto unavailable - need HTTPS or localhost");
     if (hashB64) {
-      const k = await importRoomKey(hashB64).catch(() => {
-        throw new Error("invalid key in link");
+      const k = await importRoomKey(hashB64).catch((e: unknown) => {
+        throw new Error(`invalid key in link: ${e instanceof Error ? e.message : String(e)}`);
       });
       roomKeys.set(id, k);
       keyInput = "";
@@ -97,9 +97,11 @@
     }
     const k = roomKeys.get(id);
     if (k) return createAesGcmCrypto(k, id);
-    if (keyInput.trim()) {
-      const k2 = await importRoomKey(keyInput.trim()).catch(() => {
-        throw new Error("invalid pasted key");
+    // attempt auto-import only for well-formed keys; partial input stays quiet
+    // (explicit feedback lives in importPastedKey)
+    if (isRoomKeyB64(keyInput.trim())) {
+      const k2 = await importRoomKey(keyInput.trim()).catch((e: unknown) => {
+        throw new Error(`invalid pasted key: ${e instanceof Error ? e.message : String(e)}`);
       });
       roomKeys.set(id, k2);
       const b64 = keyInput.trim();

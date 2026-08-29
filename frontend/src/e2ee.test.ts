@@ -2,9 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   noopCrypto,
   isCryptoAvailable,
+  isRoomKeyB64,
   generateRoomKey,
   exportRoomKey,
   importRoomKey,
+  importRoomKeyRaw,
   createAesGcmCrypto,
 } from "./e2ee.ts";
 
@@ -107,5 +109,59 @@ describe("e2ee AES-GCM", () => {
     const ct = await crypto.encrypt("");
     const pt = await crypto.decrypt(ct);
     expect(pt).toBe("");
+  });
+});
+
+describe("room key validation (P3)", () => {
+  const KEY_OK = "A".repeat(43); // valid charset, valid length
+
+  it("exported key is exactly 43 chars base64url", async () => {
+    const b64 = await exportRoomKey(await generateRoomKey());
+    expect(b64.length).toBe(43);
+    expect(isRoomKeyB64(b64)).toBe(true);
+  });
+
+  it("rejects std-base64 charset (+ / =)", async () => {
+    await expect(importRoomKey("+".repeat(43))).rejects.toThrow(/invalid key format/);
+    await expect(importRoomKey("/".repeat(43))).rejects.toThrow(/invalid key format/);
+    await expect(importRoomKey(KEY_OK.slice(0, 42) + "=")).rejects.toThrow(/invalid key format/);
+  });
+
+  it("rejects illegal characters", async () => {
+    await expect(importRoomKey("!".repeat(43))).rejects.toThrow(/invalid key format/);
+    await expect(importRoomKey(KEY_OK.slice(0, 42) + " ")).rejects.toThrow(/invalid key format/);
+  });
+
+  it("rejects wrong length", async () => {
+    await expect(importRoomKey("A".repeat(42))).rejects.toThrow(/invalid key format/);
+    await expect(importRoomKey("A".repeat(44))).rejects.toThrow(/invalid key format/);
+    await expect(importRoomKey("A")).rejects.toThrow(/invalid key format/);
+  });
+
+  it("rejects empty input", async () => {
+    await expect(importRoomKey("")).rejects.toThrow(/invalid key format/);
+  });
+
+  it("trims surrounding whitespace before validating", async () => {
+    const b64 = await exportRoomKey(await generateRoomKey());
+    const key = await importRoomKey(`  ${b64}  `);
+    expect(key.type).toBe("secret");
+  });
+
+  it("imported key is not extractable", async () => {
+    const b64 = await exportRoomKey(await generateRoomKey());
+    const key = await importRoomKey(b64);
+    await expect(crypto.subtle.exportKey("raw", key)).rejects.toThrow();
+  });
+
+  it("well-formed but wrong key fails decrypt (not detectable at import)", async () => {
+    const rawA = crypto.getRandomValues(new Uint8Array(32));
+    const rawB = crypto.getRandomValues(new Uint8Array(32));
+    const keyA = await importRoomKeyRaw(rawA);
+    const keyB = await importRoomKeyRaw(rawB);
+    const cryptoA = createAesGcmCrypto(keyA, "room-wrong-key");
+    const cryptoB = createAesGcmCrypto(keyB, "room-wrong-key");
+    const ct = await cryptoA.encrypt("for A only");
+    await expect(cryptoB.decrypt(ct)).rejects.toThrow();
   });
 });

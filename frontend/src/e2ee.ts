@@ -61,7 +61,9 @@ export async function exportRoomKey(key: CryptoKey): Promise<string> {
 
 export async function importRoomKey(b64: string): Promise<CryptoKey> {
   if (!isCryptoAvailable()) throw new Error("Web Crypto not available");
-  const raw = base64UrlDecode(b64);
+  const key = b64.trim();
+  if (!isRoomKeyB64(key)) throw new Error("invalid key format (expect 43 chars base64url)");
+  const raw = base64UrlDecode(key);
   if (raw.length !== 32) throw new Error("invalid key length");
   return crypto.subtle.importKey("raw", raw as BufferSource, { name: "AES-GCM" }, false, [
     "encrypt",
