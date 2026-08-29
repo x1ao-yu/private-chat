@@ -28,7 +28,10 @@
   // joined room history for sidebar (in-memory, this tab only)
   let roomHistory = $state<{ id: string; online: number; connected: boolean }[]>([]);
 
+  // per-room keys, tab memory only (P3): CryptoKey for crypto, b64 copy solely
+  // to rebuild invite links — never persisted, never sent to the server
   const roomKeys = new Map<string, CryptoKey>();
+  const roomKeyB64 = new Map<string, string>();
 
   function navigate(to: string) {
     history.pushState({}, "", to);
@@ -92,7 +95,11 @@
         throw new Error(`invalid key in link: ${e instanceof Error ? e.message : String(e)}`);
       });
       roomKeys.set(id, k);
+      roomKeyB64.set(id, hashB64);
       keyInput = "";
+      // key consumed: strip it from the URL immediately (cleans the address bar
+      // and the history entry); keep pendingHashKey as-is to avoid a reconnect re-run
+      history.replaceState({}, "", location.pathname);
       return createAesGcmCrypto(k, id);
     }
     const k = roomKeys.get(id);
@@ -104,8 +111,7 @@
         throw new Error(`invalid pasted key: ${e instanceof Error ? e.message : String(e)}`);
       });
       roomKeys.set(id, k2);
-      const b64 = keyInput.trim();
-      history.replaceState({}, "", `${location.pathname}#k=${encodeURIComponent(b64)}`);
+      roomKeyB64.set(id, keyInput.trim());
       keyInput = "";
       return createAesGcmCrypto(k2, id);
     }
@@ -169,14 +175,16 @@
       const key = await importRoomKey(keyB64);
       const id = await createChannel();
       roomKeys.set(id, key);
-      navigate(`/r/${id}#k=${encodeURIComponent(keyB64)}`);
+      roomKeyB64.set(id, keyB64);
+      // no hash: the key reaches the room via memory, not the URL/history
+      navigate(`/r/${id}`);
     } catch (e) {
       createError = e instanceof Error ? e.message : String(e);
     } finally {
       creating = false;
     }
   }
-  function joinRoom() {
+  async function joinRoom() {
     const { id, key } = parseInvite(joinInput);
     // a 43-char base64url string satisfies the roomId pattern; reject it before it
     // can be sent to the server as a channelId (key material must never leave the device)
@@ -191,12 +199,23 @@
       return;
     }
     const k = key ?? (keyInput.trim() || null);
-    if (k) navigate(`/r/${id}#k=${encodeURIComponent(k)}`);
-    else navigate(`/r/${id}`);
+    // pre-import so an invalid key is rejected before navigating and the key
+    // travels via memory, never through the URL hash
+    if (k) {
+      try {
+        roomKeys.set(id, await importRoomKey(k));
+      } catch {
+        alert("Invalid room key in invite link. Expect 43 chars base64url.");
+        return;
+      }
+      roomKeyB64.set(id, k);
+    }
+    navigate(`/r/${id}`);
   }
   function leaveRoom() {
     if (channelId) {
       roomKeys.delete(channelId);
+      roomKeyB64.delete(channelId);
       roomHistory = roomHistory.filter((r) => r.id !== channelId);
     }
     keyInput = "";
@@ -211,15 +230,23 @@
       const k = await importRoomKey(b64);
       if (!channelId) throw new Error("no channel");
       roomKeys.set(channelId, k);
-      history.replaceState({}, "", `${location.pathname}#k=${encodeURIComponent(b64)}`);
+      roomKeyB64.set(channelId, b64);
+      // clear a stale/invalid hash key (if any) so the effect re-run resolves via roomKeys
+      pendingHashKey = null;
+      history.replaceState({}, "", location.pathname);
       keyInput = "";
-      path = window.location.pathname;
     } catch (e) {
       keyError = e instanceof Error ? e.message : String(e);
     }
   }
   function copyInviteLink() {
-    navigator.clipboard.writeText(location.href);
+    // rebuild the invite link from the in-memory key when the URL no longer
+    // carries it; without a key the joiner lands on the paste-key panel
+    const b64 = channelId ? roomKeyB64.get(channelId) : undefined;
+    const link = b64
+      ? `${location.origin}/r/${channelId}#k=${encodeURIComponent(b64)}`
+      : location.href;
+    navigator.clipboard.writeText(link);
   }
   function copyText(t: string) {
     navigator.clipboard.writeText(t);
@@ -233,8 +260,6 @@
     channelStore.messages = [];
   }
   function navigateToRoom(id: string) {
-    const k = roomKeys.has(id) ? null : null; // keys are in-memory; hash only if we still store b64 — we don't
-    void k;
     navigate(`/r/${id}`);
   }
 </script>
@@ -333,7 +358,8 @@
         <div class="mx-5 mt-4 rounded-xl border border-amber-200 bg-amber-50 p-5">
           <p class="text-sm font-medium">Enter room key to decrypt</p>
           <p class="mt-1 text-xs text-zinc-600">
-            This room is E2EE. Paste the base64url key from the invite link (#k=...). Key never leaves your device.
+            This room is E2EE. Paste the base64url key from the invite link (#k=...). Key never
+            leaves your device and is not persisted — paste it again after a refresh.
           </p>
           <div class="mt-3 flex gap-2">
             <input
