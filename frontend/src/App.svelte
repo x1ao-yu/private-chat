@@ -10,8 +10,11 @@
     createAesGcmCrypto,
     isCryptoAvailable,
   } from "./e2ee.ts";
+  import { parseInvite, parseKeyFromHash } from "./invite.ts";
 
   let path = $state(window.location.pathname);
+  // key parsed from the current URL hash; must be $state so hash changes are seen after mount
+  let pendingHashKey = $state(parseKeyFromHash(window.location.hash));
   let channelStore: ChannelStore | null = $state(null);
   let input = $state("");
   let joinInput = $state("");
@@ -29,20 +32,20 @@
   function navigate(to: string) {
     history.pushState({}, "", to);
     path = window.location.pathname;
-    if (to.includes("#")) location.hash = to.slice(to.indexOf("#"));
+    pendingHashKey = parseKeyFromHash(window.location.hash);
   }
-  window.addEventListener("popstate", () => (path = window.location.pathname));
-  window.addEventListener("hashchange", () => (path = window.location.pathname));
+  window.addEventListener("popstate", () => {
+    path = window.location.pathname;
+    pendingHashKey = parseKeyFromHash(window.location.hash);
+  });
+  window.addEventListener("hashchange", () => {
+    path = window.location.pathname;
+    pendingHashKey = parseKeyFromHash(window.location.hash);
+  });
 
   let channelId = $derived(
     path.startsWith("/r/") ? path.slice(3).split("/")[0].split("?")[0].split("#")[0] : ""
   );
-  let hashKey = $derived.by(() => {
-    const h = location.hash;
-    if (!h) return null;
-    const m = h.match(/[#&]k=([^&]+)/) || h.match(/[#&]key=([^&]+)/);
-    return m ? decodeURIComponent(m[1]) : null;
-  });
 
   // keep sidebar history in sync with active room state
   $effect(() => {
@@ -108,7 +111,7 @@
 
   $effect(() => {
     const id = channelId;
-    const hk = hashKey;
+    const hk = pendingHashKey;
     void keyInput;
     if (!id) {
       channelStore?.disconnect();
@@ -169,12 +172,6 @@
     } finally {
       creating = false;
     }
-  }
-  function parseInvite(raw: string): { id: string; key: string | null } {
-    const s = raw.trim();
-    const m = s.match(/\/r\/([a-zA-Z0-9_-]{1,64})(?:#k=([^&\s]+))?/);
-    if (m) return { id: m[1], key: m[2] ? decodeURIComponent(m[2]) : null };
-    return { id: s, key: null };
   }
   function joinRoom() {
     const { id, key } = parseInvite(joinInput);
