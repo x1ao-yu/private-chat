@@ -31,6 +31,16 @@ func GenerateID() string {
 	return hex.EncodeToString(b)
 }
 
+// Create creates an empty channel (no members) for P3 Create semantics.
+// Empty channels persist until last member leaves; GC deferred to P4.
+func (m *Manager) Create(channelID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.channels[channelID]; !ok {
+		m.channels[channelID] = make(map[*websocket.Conn]string)
+	}
+}
+
 // Join adds conn to channel with clientID.
 func (m *Manager) Join(channelID string, conn *websocket.Conn, clientID string) {
 	m.mu.Lock()

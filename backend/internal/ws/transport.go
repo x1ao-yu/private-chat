@@ -103,21 +103,12 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 			for i := 0; i < 3 && s.Manager.Exists(id); i++ {
 				id = channel.GenerateID()
 			}
-			s.Manager.Join(id, c, clientID)
+			s.Manager.Create(id)
 			resp := protocol.ChannelCreated{
 				Type:      protocol.ChannelCreatedTypeChannelCreated,
 				ChannelId: id,
 			}
 			if b, err := Encode(resp); err == nil {
-				_ = c.Write(ctx, websocket.MessageText, b)
-			}
-			// also send joined with online 1
-			joined := protocol.Joined{
-				Type:      protocol.JoinedTypeJoined,
-				ChannelId: id,
-				Online:    1,
-			}
-			if b, err := Encode(joined); err == nil {
 				_ = c.Write(ctx, websocket.MessageText, b)
 			}
 		case *protocol.JoinChannel:

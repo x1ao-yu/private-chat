@@ -57,8 +57,14 @@ func TestCreateChannel(t *testing.T) {
 	if msg["type"] != "channel_created" {
 		t.Fatalf("expected channel_created got %v", msg)
 	}
-	if msg["channelId"] == "" {
+	chID := msg["channelId"].(string)
+	if chID == "" {
 		t.Fatal("missing channelId")
+	}
+	// Create is empty - need explicit join to become member
+	joinB, _ := json.Marshal(map[string]string{"type": "join_channel", "channelId": chID})
+	if err := c.Write(ctx, websocket.MessageText, joinB); err != nil {
+		t.Fatalf("join write: %v", err)
 	}
 	_, data, err = c.Read(ctx)
 	if err != nil {
@@ -90,16 +96,24 @@ func TestJoinAndBroadcast(t *testing.T) {
 	}
 	defer c2.Close(websocket.StatusNormalClosure, "")
 
-	// c1 creates channel
+	// c1 creates channel (empty)
 	if err := c1.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
 		t.Fatal(err)
 	}
 	_, data, _ := c1.Read(ctx) // channel_created
 	var cc protocol.ChannelCreated
 	_ = json.Unmarshal(data, &cc)
-	_, _, _ = c1.Read(ctx) // joined
-
 	chID := cc.ChannelId
+
+	// c1 joins its own channel
+	join1, _ := json.Marshal(map[string]string{"type": "join_channel", "channelId": chID})
+	if err := c1.Write(ctx, websocket.MessageText, join1); err != nil {
+		t.Fatal(err)
+	}
+	_, data, _ = c1.Read(ctx) // joined 1
+	_, data, _ = c1.Read(ctx) // online_count 1
+	var oc1 protocol.OnlineCount
+	_ = json.Unmarshal(data, &oc1)
 
 	// c2 joins same channel
 	joinMsg, _ := json.Marshal(map[string]string{"type": "join_channel", "channelId": chID})
@@ -181,22 +195,28 @@ func TestDisconnectBroadcastsOnlineCount(t *testing.T) {
 		t.Fatalf("dial c2: %v", err)
 	}
 
-	// c1 creates
+	// c1 creates (empty)
 	if err := c1.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
 		t.Fatal(err)
 	}
 	_, data, _ := c1.Read(ctx)
 	var cc protocol.ChannelCreated
 	_ = json.Unmarshal(data, &cc)
-	_, _, _ = c1.Read(ctx) // joined
 	chID := cc.ChannelId
+	// c1 joins its own channel
+	join1, _ := json.Marshal(map[string]string{"type": "join_channel", "channelId": chID})
+	if err := c1.Write(ctx, websocket.MessageText, join1); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = c1.Read(ctx) // joined 1
+	_, _, _ = c1.Read(ctx) // online_count 1
 
 	// c2 joins
 	joinMsg, _ := json.Marshal(map[string]string{"type": "join_channel", "channelId": chID})
 	if err := c2.Write(ctx, websocket.MessageText, joinMsg); err != nil {
 		t.Fatal(err)
 	}
-	_, _, _ = c2.Read(ctx) // joined
+	_, _, _ = c2.Read(ctx) // joined 2
 	_, _, _ = c2.Read(ctx) // online_count 2
 	_, _, _ = c1.Read(ctx) // online_count 2
 
@@ -261,15 +281,20 @@ func TestSendWithoutJoin(t *testing.T) {
 	}
 	defer c2.Close(websocket.StatusNormalClosure, "")
 
-	// c1 creates channel
+	// c1 creates channel (empty) and joins
 	if err := c1.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
 		t.Fatal(err)
 	}
 	_, data, _ := c1.Read(ctx)
 	var cc protocol.ChannelCreated
 	_ = json.Unmarshal(data, &cc)
-	_, _, _ = c1.Read(ctx)
 	chID := cc.ChannelId
+	join1, _ := json.Marshal(map[string]string{"type": "join_channel", "channelId": chID})
+	if err := c1.Write(ctx, websocket.MessageText, join1); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = c1.Read(ctx) // joined
+	_, _, _ = c1.Read(ctx) // online_count
 
 	// c2 tries to send without joining
 	send := map[string]string{"type": "send_message", "channelId": chID, "payload": "hello"}
@@ -332,8 +357,7 @@ func TestCreateRateLimited(t *testing.T) {
 		if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}
-		_, _, _ = c.Read(ctx) // channel_created
-		_, _, _ = c.Read(ctx) // joined
+		_, _, _ = c.Read(ctx) // channel_created (empty, no joined)
 	}
 	// 6th should be rate_limited
 	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
@@ -361,15 +385,21 @@ func TestSendRateLimited(t *testing.T) {
 	}
 	defer c.Close(websocket.StatusNormalClosure, "")
 
-	// create channel
+	// create channel (empty)
 	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
 		t.Fatal(err)
 	}
 	_, data, _ := c.Read(ctx)
 	var cc protocol.ChannelCreated
 	_ = json.Unmarshal(data, &cc)
-	_, _, _ = c.Read(ctx)
 	chID := cc.ChannelId
+	// join to become member
+	joinB, _ := json.Marshal(map[string]string{"type": "join_channel", "channelId": chID})
+	if err := c.Write(ctx, websocket.MessageText, joinB); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _ = c.Read(ctx) // joined
+	_, _, _ = c.Read(ctx) // online_count
 
 	// send 10 messages should succeed (per-conn 10/s)
 	for i := 0; i < 10; i++ {
