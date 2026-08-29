@@ -27,10 +27,10 @@
 
 ## P3 — Room Keys
 
-* [ ] Room secret
-* [ ] Invite/link format
-* [ ] Client-side secret handling
-* [ ] Key validation
+* [x] Room secret
+* [x] Invite/link format
+* [x] Client-side secret handling
+* [x] Key validation
 
 ## P4 — Privacy
 
@@ -80,4 +80,4 @@
 
 ## Current
 
-**P2**
+**P4**

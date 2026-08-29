@@ -40,6 +40,14 @@ Do not claim a security property unless the protocol and implementation actually
 * `isCryptoAvailable()` gate requires secure context (HTTPS or `localhost`); tests use `jsdom 27` forwarding to Node Web Crypto. Tamper of `iv`/`messageId`/`ct`/`AAD` causes `OperationError` decrypt failure, surfaced as `⚠️ decrypt failed`.
 * Verification: `frontend/src/e2ee.test.ts:1` covers round-trip, tamper, cross-room AAD, IV/messageId uniqueness; `transport_test.go` asserts `payload` != plaintext.
 
+## P3 Notes
+
+* Invite link format: `/r/{channelId}#k={base64url}`. The key is a 32-byte AES-256 key, exactly 43 chars unpadded base64url (`frontend/src/e2ee.ts` `isRoomKeyB64`), generated client-side with Web Crypto.
+* Key validation on import (`importRoomKey`): strict base64url whitelist (charset + exact 43-char length) before any decode; malformed input fails with a specific error. A **wrong but well-formed key cannot be detected at import** (no protocol handshake exists; that belongs to P5/P6/P7) — it surfaces only as per-message `decrypt failed` placeholders.
+* Hash hygiene (client-side secret handling): the room key travels **only** in the URL fragment, which browsers never send to the server; the relay protocol has no key field (`protocol/schema.json`, all messages `additionalProperties:false`). The landing hash is stripped via `history.replaceState` as soon as it is imported; SPA navigation (create/join/sidebar) never puts a key in the URL. A 43-char base64url string pasted into Join is rejected before any network request, so a key can never be sent to the server as a `channelId`.
+* Key storage: tab memory only — a non-extractable `CryptoKey` (`extractable:false`) for crypto, plus an in-memory base64 copy used solely to rebuild invite links (`copyInviteLink`). No localStorage/sessionStorage/cookies. **No persistence by design: a refresh drops the room key and rejoining requires re-pasting the invite key.**
+* Key rotation, member removal, and identity binding of keys are not provided at this stage (P5/P6).
+
 ## Security-Sensitive Changes
 
 Review carefully before implementing:
