@@ -28,6 +28,62 @@ export function isRoomKeyB64(s: string): boolean {
   return /^[A-Za-z0-9_-]{43}$/.test(s);
 }
 
+const B64URL_RE = /^[A-Za-z0-9_-]+$/;
+
+export function isValidEnvelope(payload: string): boolean {
+  const parts = payload.split(".");
+  if (parts.length !== 3) return false;
+  const [ivB64, midB64, ctB64] = parts;
+  if (!ivB64 || !midB64 || !ctB64) return false;
+  if (!B64URL_RE.test(ivB64) || !B64URL_RE.test(midB64) || !B64URL_RE.test(ctB64)) return false;
+  try {
+    const iv = base64UrlDecode(ivB64);
+    const mid = base64UrlDecode(midB64);
+    const ct = base64UrlDecode(ctB64);
+    if (iv.length !== 12) return false;
+    if (mid.length !== 16) return false;
+    if (ct.length < 16) return false; // at least tag
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+export function extractMessageIdB64(payload: string): string | null {
+  const parts = payload.split(".");
+  if (parts.length !== 3) return null;
+  return parts[1] || null;
+}
+
+// Simple LRU dedup for replay protection (per-channel, in-memory)
+export class ReplayCache {
+  private seen = new Set<string>();
+  private queue: string[] = [];
+  private max: number;
+  constructor(max = 1000) {
+    this.max = max;
+  }
+  has(id: string): boolean {
+    return this.seen.has(id);
+  }
+  add(id: string): void {
+    if (this.seen.has(id)) return;
+    this.seen.add(id);
+    this.queue.push(id);
+    if (this.queue.length > this.max) {
+      const old = this.queue.shift()!;
+      this.seen.delete(old);
+    }
+  }
+  clear(): void {
+    this.seen.clear();
+    this.queue = [];
+  }
+  size(): number {
+    return this.seen.size;
+  }
+}
+
 function base64UrlEncode(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i++) {
@@ -124,4 +180,27 @@ export function createAesGcmCrypto(key: CryptoKey, channelId: string): Crypto {
       return dec.decode(plainBuffer);
     },
   };
+}
+
+// Key rotation helpers: wrap new room key with old key's Crypto (P5)
+export async function wrapNewKey(crypto: Crypto, newKeyB64: string): Promise<string> {
+  if (!isRoomKeyB64(newKeyB64)) throw new Error("invalid new key format");
+  const plain = JSON.stringify({ k: newKeyB64, v: 1 });
+  return crypto.encrypt(plain);
+}
+
+export async function unwrapNewKey(crypto: Crypto, payload: string): Promise<string> {
+  const plain = await crypto.decrypt(payload);
+  let obj: unknown;
+  try {
+    obj = JSON.parse(plain);
+  } catch {
+    throw new Error("invalid key_update payload");
+  }
+  if (!obj || typeof obj !== "object" || (obj as { v?: unknown }).v !== 1) {
+    throw new Error("invalid key_update version");
+  }
+  const k = (obj as { k?: unknown }).k;
+  if (typeof k !== "string" || !isRoomKeyB64(k)) throw new Error("invalid wrapped key");
+  return k;
 }
