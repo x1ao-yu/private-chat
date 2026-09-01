@@ -10,6 +10,7 @@
     createAesGcmCrypto,
     isCryptoAvailable,
     isRoomKeyB64,
+    wrapNewKey,
   } from "./e2ee.ts";
   import { parseInvite, parseKeyFromHash } from "./invite.ts";
 
@@ -24,6 +25,7 @@
   let messagesEl: HTMLDivElement | null = $state(null);
   let keyInput = $state("");
   let keyError: string | null = $state(null);
+  let rotating = $state(false);
 
   // joined room history for sidebar (in-memory, this tab only)
   let roomHistory = $state<{ id: string; online: number; connected: boolean }[]>([]);
@@ -135,7 +137,15 @@
         if (!isCryptoAvailable()) throw new Error("E2EE requires HTTPS or localhost");
         const crypto = await getCryptoForChannel(id, hk);
         if (cancelled) return;
-        const s = new ChannelStore(id, crypto);
+        const s = new ChannelStore(id, crypto, {
+          onKeyRotated: (newKeyB64) => {
+            // keep App's maps in sync (P5) — key_updated from peers
+            roomKeyB64.set(id, newKeyB64);
+            importRoomKey(newKeyB64)
+              .then((k) => roomKeys.set(id, k))
+              .catch(() => {});
+          },
+        });
         store = s;
         channelStore = s;
         s.connect();
@@ -248,6 +258,70 @@
       : location.href;
     navigator.clipboard.writeText(link);
   }
+
+  async function rotateKeyViaE2EE() {
+    if (!channelId || !channelStore || rotating) return;
+    rotating = true;
+    keyError = null;
+    try {
+      const oldB64 = roomKeyB64.get(channelId);
+      const oldKey = roomKeys.get(channelId);
+      if (!oldB64 || !oldKey) throw new Error("no current key");
+      const oldCrypto = createAesGcmCrypto(oldKey, channelId);
+      const tmpKey = await generateRoomKey();
+      const newB64 = await exportRoomKey(tmpKey);
+      const newKey = await importRoomKey(newB64);
+      const wrapped = await wrapNewKey(oldCrypto, newB64);
+      const ok = await channelStore.sendKeyUpdate(wrapped);
+      if (!ok) throw new Error("not connected");
+      // optimistic local update
+      roomKeys.set(channelId, newKey);
+      roomKeyB64.set(channelId, newB64);
+      channelStore.updateCrypto(createAesGcmCrypto(newKey, channelId));
+      // auto-copy new invite
+      const link = `${location.origin}/r/${channelId}#k=${encodeURIComponent(newB64)}`;
+      await navigator.clipboard.writeText(link).catch(() => {});
+    } catch (e) {
+      keyError = e instanceof Error ? e.message : String(e);
+    } finally {
+      rotating = false;
+    }
+  }
+
+  async function rotateKeyLocally() {
+    //协作式移除: 本地轮换，不通过 E2EE 通道分享，旧成员不获新钥，需私下重分享新 invite 给保留成员
+    if (!channelId || !channelStore || rotating) return;
+    rotating = true;
+    keyError = null;
+    try {
+      const tmpKey = await generateRoomKey();
+      const newB64 = await exportRoomKey(tmpKey);
+      const newKey = await importRoomKey(newB64);
+      roomKeys.set(channelId, newKey);
+      roomKeyB64.set(channelId, newB64);
+      channelStore.updateCrypto(createAesGcmCrypto(newKey, channelId));
+      const link = `${location.origin}/r/${channelId}#k=${encodeURIComponent(newB64)}`;
+      await navigator.clipboard.writeText(link).catch(() => {});
+      if (channelStore) {
+        // system hint
+        const ts = Date.now();
+        channelStore.messages = [
+          ...channelStore.messages,
+          {
+            channelId,
+            payload: "🔑 Key rotated locally — share new invite only with members to keep (old members excluded)",
+            from: "system",
+            self: true,
+            ts,
+          } as unknown as ChatMessage,
+        ];
+      }
+    } catch (e) {
+      keyError = e instanceof Error ? e.message : String(e);
+    } finally {
+      rotating = false;
+    }
+  }
   function copyText(t: string) {
     navigator.clipboard.writeText(t);
   }
@@ -340,6 +414,24 @@
             </svg>
             Copy link
           </button>
+          {#if channelStore}
+            <button
+              class="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 disabled:opacity-50"
+              disabled={rotating || channelStore.status !== "open"}
+              title="Generate new key and share via E2EE (all members get new key)"
+              onclick={rotateKeyViaE2EE}
+            >
+              {rotating ? "Rotating…" : "Rotate & share"}
+            </button>
+            <button
+              class="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+              disabled={rotating || channelStore.status !== "open"}
+              title="Rotate locally only — old members won't get new key (cooperative eviction)"
+              onclick={rotateKeyLocally}
+            >
+              Rotate locally
+            </button>
+          {/if}
         </div>
       </div>
 
