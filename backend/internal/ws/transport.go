@@ -91,11 +91,15 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 		switch v := msg.(type) {
 		case *protocol.CreateChannel:
 			_ = v
-			// dual limit: per-IP 5/min + per-conn 5/min
+			// per-IP 5/min + per-conn 5/min + per-IP 20/hour (maxChannels/IP)
 			ip := clientIP(r)
 			connCreateKey := fmt.Sprintf("%p:create", c)
 			if !s.limiter.Allow(ip+":create", 5, time.Minute) || !s.limiter.Allow(connCreateKey, 5, time.Minute) {
 				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
+			if !s.limiter.Allow(ip+":createHour", 20, time.Hour) {
+				_ = writeError(ctx, c, "rate_limited", "too many channels")
 				continue
 			}
 			id := channel.GenerateID()
@@ -112,8 +116,19 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 				_ = c.Write(ctx, websocket.MessageText, b)
 			}
 		case *protocol.JoinChannel:
+			// 20/min per-conn
+			connJoinKey := fmt.Sprintf("%p:join", c)
+			if !s.limiter.Allow(connJoinKey, 20, time.Minute) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
 			if !s.Manager.Exists(v.ChannelId) {
 				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			}
+			// maxMembers 100
+			if s.Manager.Count(v.ChannelId) >= 100 {
+				_ = writeError(ctx, c, "rate_limited", "room full")
 				continue
 			}
 			s.Manager.Join(v.ChannelId, c, clientID)
@@ -128,6 +143,11 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 			// broadcast online_count to others
 			broadcastOnlineCount(ctx, s.Manager, v.ChannelId)
 		case *protocol.LeaveChannel:
+			connLeaveKey := fmt.Sprintf("%p:leave", c)
+			if !s.limiter.Allow(connLeaveKey, 20, time.Minute) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
 			s.Manager.Leave(v.ChannelId, c)
 			left := protocol.Left{
 				Type:      protocol.LeftTypeLeft,
@@ -138,9 +158,14 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 			}
 			broadcastOnlineCount(ctx, s.Manager, v.ChannelId)
 		case *protocol.SendMessage:
-			// per-conn 10/s burst 20 (fixed window 10/s, burst via 2 windows)
+			// per-conn 10/s burst 20 + per-IP 30/s
+			ip := clientIP(r)
 			connSendKey := fmt.Sprintf("%p:send", c)
 			if !s.limiter.Allow(connSendKey, 10, time.Second) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
+			if !s.limiter.Allow(ip+":sendIP", 30, time.Second) {
 				_ = writeError(ctx, c, "rate_limited", "too many requests")
 				continue
 			}
@@ -155,12 +180,56 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 				_ = writeError(ctx, c, "channel_not_found", "not a member")
 				continue
 			}
+			// refresh idle TTL on valid activity
+			s.Manager.Touch(v.ChannelId)
 			// per-recipient self flag
 			snapshot := s.Manager.Snapshot(v.ChannelId)
 			for conn := range snapshot {
 				isSelf := conn == c
 				bcast := protocol.BroadcastMessage{
 					Type:      protocol.BroadcastMessageTypeMessage,
+					ChannelId: v.ChannelId,
+					Payload:   v.Payload,
+					From:      clientID,
+					Self:      &isSelf,
+				}
+				b, err := Encode(bcast)
+				if err != nil {
+					continue
+				}
+				cCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = conn.Write(cCtx, websocket.MessageText, b)
+				cancel()
+			}
+		case *protocol.KeyUpdate:
+			// same limits as send: 10/s per-conn burst20 + 30/s per-IP
+			ip := clientIP(r)
+			connKeyUpdateKey := fmt.Sprintf("%p:send", c)
+			if !s.limiter.Allow(connKeyUpdateKey, 10, time.Second) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
+			if !s.limiter.Allow(ip+":sendIP", 30, time.Second) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
+			if !s.Manager.Exists(v.ChannelId) {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			}
+			if snap := s.Manager.Snapshot(v.ChannelId); snap == nil {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			} else if _, ok := snap[c]; !ok {
+				_ = writeError(ctx, c, "channel_not_found", "not a member")
+				continue
+			}
+			s.Manager.Touch(v.ChannelId)
+			snapshot := s.Manager.Snapshot(v.ChannelId)
+			for conn := range snapshot {
+				isSelf := conn == c
+				bcast := protocol.KeyUpdated{
+					Type:      protocol.KeyUpdatedTypeKeyUpdated,
 					ChannelId: v.ChannelId,
 					Payload:   v.Payload,
 					From:      clientID,

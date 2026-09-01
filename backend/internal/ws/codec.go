@@ -47,6 +47,18 @@ func Decode(raw []byte) (interface{}, error) {
 			return nil, err
 		}
 		return &v, nil
+	case "key_update":
+		var v protocol.KeyUpdate
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, err
+		}
+		return &v, nil
+	case "key_updated":
+		var v protocol.KeyUpdated
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return nil, err
+		}
+		return &v, nil
 	case "channel_created":
 		var v protocol.ChannelCreated
 		if err := json.Unmarshal(raw, &v); err != nil {
@@ -96,7 +108,7 @@ func Encode(v interface{}) ([]byte, error) {
 // IsClientMessage reports whether type is a client->server message.
 func IsClientMessage(typeStr string) bool {
 	switch typeStr {
-	case "create_channel", "join_channel", "leave_channel", "send_message":
+	case "create_channel", "join_channel", "leave_channel", "send_message", "key_update":
 		return true
 	default:
 		return false
