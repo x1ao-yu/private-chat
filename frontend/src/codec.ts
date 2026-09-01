@@ -7,20 +7,43 @@ import type {
   JoinChannel,
   LeaveChannel,
   SendMessage,
+  KeyUpdate,
   ChannelCreated,
   Joined,
   Left,
   BroadcastMessage,
+  KeyUpdated,
   OnlineCount,
   Error as ProtocolError,
 } from "./protocol.gen.ts";
 
-export type ClientMessage = CreateChannel | JoinChannel | LeaveChannel | SendMessage;
-export type ServerMessage = ChannelCreated | Joined | Left | BroadcastMessage | OnlineCount | ProtocolError;
+export type ClientMessage = CreateChannel | JoinChannel | LeaveChannel | SendMessage | KeyUpdate;
+export type ServerMessage =
+  | ChannelCreated
+  | Joined
+  | Left
+  | BroadcastMessage
+  | KeyUpdated
+  | OnlineCount
+  | ProtocolError;
 export type AnyMessage = ChatProtocol;
 
-const CLIENT_TYPES = new Set(["create_channel", "join_channel", "leave_channel", "send_message"]);
-const SERVER_TYPES = new Set(["channel_created", "joined", "left", "message", "online_count", "error"]);
+const CLIENT_TYPES = new Set([
+  "create_channel",
+  "join_channel",
+  "leave_channel",
+  "send_message",
+  "key_update",
+]);
+const SERVER_TYPES = new Set([
+  "channel_created",
+  "joined",
+  "left",
+  "message",
+  "key_updated",
+  "online_count",
+  "error",
+]);
 const ALL_TYPES = new Set([...CLIENT_TYPES, ...SERVER_TYPES]);
 
 const CHANNEL_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -63,6 +86,10 @@ export function encode(msg: AnyMessage): string {
       assertChannelId((msg as SendMessage).channelId);
       assertPayload((msg as SendMessage).payload);
       break;
+    case "key_update":
+      assertChannelId((msg as KeyUpdate).channelId);
+      assertPayload((msg as KeyUpdate).payload);
+      break;
     case "joined":
       assertChannelId((msg as Joined).channelId);
       if (typeof (msg as Joined).online !== "number" || (msg as Joined).online < 1) {
@@ -73,6 +100,13 @@ export function encode(msg: AnyMessage): string {
       assertChannelId((msg as BroadcastMessage).channelId);
       assertPayload((msg as BroadcastMessage).payload);
       if (typeof (msg as BroadcastMessage).from !== "string" || (msg as BroadcastMessage).from.length === 0) {
+        throw new Error("invalid from");
+      }
+      break;
+    case "key_updated":
+      assertChannelId((msg as KeyUpdated).channelId);
+      assertPayload((msg as KeyUpdated).payload);
+      if (typeof (msg as KeyUpdated).from !== "string" || (msg as KeyUpdated).from.length === 0) {
         throw new Error("invalid from");
       }
       break;
@@ -129,6 +163,12 @@ export function decode(raw: string): AnyMessage {
       assertChannelId(parsed.channelId);
       assertPayload(parsed.payload);
       return parsed as unknown as SendMessage;
+    case "key_update":
+      if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
+      if (typeof parsed.payload !== "string") throw new Error("missing payload");
+      assertChannelId(parsed.channelId);
+      assertPayload(parsed.payload);
+      return parsed as unknown as KeyUpdate;
     case "channel_created":
       if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
       assertChannelId(parsed.channelId);
@@ -145,6 +185,11 @@ export function decode(raw: string): AnyMessage {
       if (typeof parsed.payload !== "string") throw new Error("missing payload");
       if (typeof parsed.from !== "string") throw new Error("missing from");
       return parsed as unknown as BroadcastMessage;
+    case "key_updated":
+      if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
+      if (typeof parsed.payload !== "string") throw new Error("missing payload");
+      if (typeof parsed.from !== "string") throw new Error("missing from");
+      return parsed as unknown as KeyUpdated;
     case "online_count":
       if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
       if (typeof parsed.count !== "number") throw new Error("missing count");

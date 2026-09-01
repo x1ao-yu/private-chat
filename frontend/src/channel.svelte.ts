@@ -1,7 +1,16 @@
 // channel.svelte.ts — UI state only, composes transport + codec + e2ee
 import { Transport, type TransportStatus } from "./transport.ts";
 import { encode, decode, type AnyMessage } from "./codec.ts";
-import { noopCrypto, type Crypto } from "./e2ee.ts";
+import {
+  noopCrypto,
+  type Crypto,
+  isValidEnvelope,
+  extractMessageIdB64,
+  ReplayCache,
+  unwrapNewKey,
+  createAesGcmCrypto,
+  importRoomKey,
+} from "./e2ee.ts";
 import type { BroadcastMessage } from "./protocol.gen.ts";
 
 function getWsUrl(): string {
@@ -70,6 +79,10 @@ export async function createChannel(): Promise<string> {
 
 export type ChatMessage = BroadcastMessage & { ts: number };
 
+export type ChannelStoreOptions = {
+  onKeyRotated?: (newKeyB64: string, newCrypto: Crypto) => void;
+};
+
 export class ChannelStore {
   channelId: string = $state("");
   messages: ChatMessage[] = $state([]);
@@ -81,10 +94,13 @@ export class ChannelStore {
   private crypto: Crypto;
   private unsubMessage: (() => void) | null = null;
   private unsubStatus: (() => void) | null = null;
+  private replayCache = new ReplayCache(1000);
+  private onKeyRotated?: (newKeyB64: string, newCrypto: Crypto) => void;
 
-  constructor(channelId: string, crypto: Crypto = noopCrypto) {
+  constructor(channelId: string, crypto: Crypto = noopCrypto, opts: ChannelStoreOptions = {}) {
     this.channelId = channelId;
     this.crypto = crypto;
+    this.onKeyRotated = opts.onKeyRotated;
     this.transport = new Transport(getWsUrl());
 
     this.unsubStatus = this.transport.onStatus((s) => {
@@ -108,16 +124,59 @@ export class ChannelStore {
           this.online = msg.online;
           break;
         case "message": {
+          // envelope sanity + replay protection (P5)
+          if (!isValidEnvelope(msg.payload)) {
+            this.error = "invalid envelope";
+            const ts = Date.now();
+            this.messages = [...this.messages, { ...msg, payload: "⚠️ invalid envelope", ts }];
+            break;
+          }
+          const mid = extractMessageIdB64(msg.payload);
+          if (mid && this.replayCache.has(mid)) {
+            this.error = "replay dropped";
+            break;
+          }
           let payload: string;
           try {
             payload = await this.crypto.decrypt(msg.payload);
           } catch {
             this.error = "decrypt failed (wrong key or corrupted)";
-            // show placeholder instead of raw ciphertext
             payload = "⚠️ decrypt failed";
           }
+          if (mid) this.replayCache.add(mid);
           const ts = Date.now();
           this.messages = [...this.messages, { ...msg, payload, ts }];
+          break;
+        }
+        case "key_updated": {
+          if (!isValidEnvelope(msg.payload)) {
+            this.error = "invalid key_update envelope";
+            break;
+          }
+          const mid = extractMessageIdB64(msg.payload);
+          if (mid && this.replayCache.has(mid)) {
+            this.error = "replay dropped (key_update)";
+            break;
+          }
+          try {
+            const newKeyB64 = await unwrapNewKey(this.crypto, msg.payload);
+            const newKey = await importRoomKey(newKeyB64);
+            const newCrypto = createAesGcmCrypto(newKey, this.channelId);
+            this.crypto = newCrypto;
+            this.replayCache.clear();
+            if (mid) this.replayCache.add(mid);
+            this.onKeyRotated?.(newKeyB64, newCrypto);
+            const ts = Date.now();
+            const sysPayload = `🔑 Key rotated by ${msg.from}`;
+            // system message visible in timeline
+            this.messages = [
+              ...this.messages,
+              { ...msg, payload: sysPayload, ts } as unknown as ChatMessage,
+            ];
+            this.error = null;
+          } catch {
+            this.error = "key rotation failed (decrypt/import)";
+          }
           break;
         }
         case "online_count":
@@ -135,6 +194,12 @@ export class ChannelStore {
           break;
       }
     });
+  }
+
+  /** Allow App to update crypto after local rotation */
+  updateCrypto(crypto: Crypto): void {
+    this.crypto = crypto;
+    this.replayCache.clear();
   }
 
   connect(): void {
@@ -186,6 +251,21 @@ export class ChannelStore {
         return false;
       }
       this.error = null;
+      return true;
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  }
+
+  async sendKeyUpdate(wrappedPayload: string): Promise<boolean> {
+    try {
+      const raw = encode({ type: "key_update", channelId: this.channelId, payload: wrappedPayload });
+      const ok = this.transport.sendRaw(raw);
+      if (!ok) {
+        this.error = "not connected (queued)";
+        return false;
+      }
       return true;
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
