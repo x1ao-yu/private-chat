@@ -1,6 +1,6 @@
-# Private Chat — P3 Room Keys
+# Private Chat — P5 Security
 
-Lightweight browser-based E2EE private chat. P3 adds room keys: per-room client-side secrets, invite links (`/r/{id}#k=`) whose hash is stripped right after import, strict key validation, tab-memory-only storage. P2 E2EE, P1 minimal chat and P0 foundation already done.
+Lightweight browser-based E2EE private chat. P5 adds replay protection, message integrity, key rotation via E2EE-wrapped `key_update`/`key_updated`, cooperative member removal, hardened rate limits, XSS/CSP review. P4 privacy, P3 room keys, P2 E2EE, P1 minimal chat and P0 foundation already done.
 
 ## Principles
 
@@ -20,18 +20,18 @@ Lightweight browser-based E2EE private chat. P3 adds room keys: per-room client-
 ```
 frontend/src/
   transport.ts      # WebSocket lifecycle only + reconnect
-  codec.ts          # encode/decode via protocol.gen.ts
-  e2ee.ts           # AES-GCM-256, 12B IV + 16B messageId + AAD v1|channelId|messageId
+  codec.ts          # encode/decode via protocol.gen.ts (incl. key_update/key_updated)
+  e2ee.ts           # AES-GCM-256, 12B IV + 16B messageId + AAD v1|channelId|messageId + ReplayCache + wrapNewKey
   invite.ts         # invite-link / hash-key parsing (pure functions, P3)
-  channel.svelte.ts # UI state (Svelte runes), composes transport+codec+e2ee (createChannel + ChannelStore)
-  App.svelte        # routes / and /r/:id, in-memory room keys, invite hash #k= stripped after import
+  channel.svelte.ts # UI state (Svelte runes), replay dedup + key_updated handling
+  App.svelte        # routes / and /r/:id, in-memory keys + Rotate & share / Rotate locally
   protocol.gen.ts   # generated, do not edit
 
 backend/
-  cmd/server/main.go
-  internal/channel/manager.go  # in-memory channel -> conns
-  internal/ws/transport.go     # WS handler + routing + heartbeat + rate limit
-  internal/ws/codec.go         # Decode/Encode via protocol.gen.go
+  cmd/server/main.go           # single-instance, 1m expiration sweep
+  internal/channel/manager.go  # in-memory channel -> conns + EmptyTTL 10m / IdleTTL 24h + Expire + maxMembers check
+  internal/ws/transport.go     # WS handler + routing + heartbeat + rate limit (join/leave 20/m, send 10/s+burst +30/s/IP, maxChannels/IP 20) + key_update relay
+  internal/ws/codec.go         # Decode/Encode via protocol.gen.go (incl. key_update)
   internal/ws/limiter.go      # fixed-window rate limiter
   internal/protocol/gen.go     # generated
 
@@ -78,8 +78,8 @@ docker compose up --build  # frontend :80, backend :8080
 
 ## Protocol
 
-Client → Server: `create_channel`, `join_channel`, `leave_channel`, `send_message`
-Server → Client: `channel_created`, `joined`, `left`, `message`, `online_count`, `error`
+Client → Server: `create_channel`, `join_channel`, `leave_channel`, `send_message`, `key_update` (E2EE-wrapped new key)
+Server → Client: `channel_created`, `joined`, `left`, `message`, `key_updated`, `online_count`, `error`
 
 `message.from` is an ephemeral connection ID (`peer-` + 4B random per WebSocket, regenerated on reconnect, `backend/internal/ws/transport.go:210`) — **not** a stable identity (P6). No history is persisted (relay-only, `backend/internal/channel/manager.go:11`); rejoin does not replay. Minimal `rate_limited` (`create 5/min per-IP+per-conn`, `send 10/s per-conn`).
 
@@ -87,13 +87,17 @@ Server → Client: `channel_created`, `joined`, `left`, `message`, `online_count
 
 ## Security Notes
 
-- **E2EE**: `AES-GCM-256` with `12B IV` never reused, `16B messageId` per message, `AAD v1|channelId|messageId` binding, room key `32B` `crypto.getRandomValues` per room, tab-memory only, not permanent (P5 rotation); key travels once via invite hash `#k=` and is stripped after import, never sent to server; strict 43-char base64url validation on import.
+- **E2EE**: `AES-GCM-256` with `12B IV` never reused, `16B messageId` per message, `AAD v1|channelId|messageId` binding, room key `32B` `crypto.getRandomValues` per room, tab-memory only, not permanent; key travels once via invite hash `#k=` and is stripped after import, never sent to server; strict 43-char base64url validation on import. **P5**: `wrapNewKey`/`unwrapNewKey` reuses E2EE envelope to rotate.
+- **Privacy (P4)**: no plaintext persistence — server relay-only (`backend/internal/channel/manager.go:24`), in-memory `map[channelId]*channelInfo` single-instance (restart drops state), room expiration empty 10m / idle 24h via 1m sweep `ExpireNow()` (`backend/cmd/server/main.go:21`), safe logging only `listening` + `expired N channels` (no payload/peer-id, `channelId` allowed but not logged by default), metadata minimal (channelId, ephemeral peer-id per conn, online count, IP fixed-window 60s).
+- **Replay/Integrity (P5)**: per-channel `ReplayCache` LRU 1000 on `messageIdB64` (`frontend/src/e2ee.ts:51`, `frontend/src/channel.svelte.ts:106`) drops duplicates, `isValidEnvelope` pre-validates 12B iv/16B mid/≥16B ct; GCM tag + AAD ensures outsider integrity, insider forge still possible (needs P6 identity); `MessageList.svelte:34,56` text interpolation safe (no `{@html}`), `XSS` payload stays plaintext.
+- **Key rotation / Member removal (P5)**: `key_update` → `key_updated` E2EE-wrapped broadcast (`protocol/schema.json:66`, `backend/internal/ws/transport.go:210`, `frontend/src/e2ee.ts:170`) server only relays; cooperative eviction = `Rotate locally` without broadcast, old members lose key.
 - Plaintext never logged server-side; server relays `payload` verbatim and sees ciphertext only (verified via `e2ee.test.ts`).
 - `protocol/schema.json` validation enforced both sides (go-jsonschema UnmarshalJSON + TS codec)
 - `from` is per-connection, not identity; no history persistence by design
-- Minimal rate limiting: `create 5/min`, `send 10/s` (`backend/internal/ws/limiter.go:1`), heartbeat 30s Ping/Pong (`backend/internal/ws/transport.go:49`)
+- **Rate limiting (P5)**: `create 5/min per-IP+per-conn + 20/hour per-IP`, `join/leave 20/min per-conn`, `send/key_update 10/s per-conn burst20 + 30/s per-IP`, `maxMembers 100` (`backend/internal/ws/limiter.go:1`, `backend/internal/ws/transport.go:96-240`), heartbeat 30s Ping/Pong (`backend/internal/ws/transport.go:57`)
+- **CSP (P5)**: `frontend/index.html:8` + `frontend/nginx.conf:6` `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'` + `nosniff` etc. No nonce needed.
 - Production should use HTTPS/WSS and restrict `InsecureSkipVerify`
 
 ## Roadmap
 
-P0 Foundation done, P1 Minimal Chat done, P2 E2EE done, P3 Room Keys done — see `ROADMAP.md`. Next is P4 Privacy (no plaintext persistence, in-memory room state, room expiration, safe logging, metadata review).
+P0 Foundation done, P1 Minimal Chat done, P2 E2EE done, P3 Room Keys done, P4 Privacy done, P5 Security done — see `ROADMAP.md`. Next is P6 Anonymous Identity (identity key, display identity, verification).

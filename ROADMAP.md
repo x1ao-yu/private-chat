@@ -34,20 +34,20 @@
 
 ## P4 — Privacy
 
-* [ ] No plaintext persistence
-* [ ] In-memory room state
-* [ ] Room expiration
-* [ ] Safe logging
-* [ ] Metadata review
+* [x] No plaintext persistence
+* [x] In-memory room state
+* [x] Room expiration
+* [x] Safe logging
+* [x] Metadata review
 
 ## P5 — Security
 
-* [ ] Replay protection
-* [ ] Message integrity
-* [ ] Key rotation
-* [ ] Member removal
-* [ ] Rate limiting
-* [ ] XSS/security review
+* [x] Replay protection
+* [x] Message integrity
+* [x] Key rotation
+* [x] Member removal
+* [x] Rate limiting
+* [x] XSS/security review
 
 ## P6 — Anonymous Identity
 
@@ -80,4 +80,4 @@
 
 ## Current
 
-**P4**
+**P6**

@@ -1,6 +1,6 @@
-# Private Chat — P3 房间密钥
+# Private Chat — P5 安全加固
 
-轻量级、基于浏览器的端到端加密（E2EE）私密聊天。P3 新增房间密钥：每房间独立的客户端密钥、邀请链接（`/r/{id}#k=`，导入后立即从 URL 剥离 hash）、严格密钥校验、仅存于标签页内存。P2 端到端加密、P1 最小化聊天与 P0 基础能力已完成。
+轻量级、基于浏览器的端到端加密（E2EE）私密聊天。P5 新增重放保护、消息完整性、E2EE 封装 `key_update`/`key_updated` 密钥轮换、协作式成员移除、硬化限流、XSS/CSP 审查。P4 隐私、P3 房间密钥、P2 E2EE、P1 最小聊天与 P0 基础已完成。
 
 ## 核心原则
 
@@ -20,18 +20,18 @@
 ```
 frontend/src/
   transport.ts      # 仅负责 WebSocket 生命周期与重连
-  codec.ts          # 通过 protocol.gen.ts 编解码
-  e2ee.ts           # AES-GCM-256，12B IV + 16B messageId + AAD v1|channelId|messageId
+  codec.ts          # 通过 protocol.gen.ts 编解码（含 key_update/key_updated）
+  e2ee.ts           # AES-GCM-256，12B IV + 16B messageId + AAD v1|channelId|messageId + ReplayCache + wrapNewKey
   invite.ts         # 邀请链接 / hash 密钥解析（纯函数，P3）
-  channel.svelte.ts # UI 状态（Svelte runes），组合 transport+codec+e2ee（createChannel + ChannelStore）
-  App.svelte        # 路由 / 和 /r/:id，房间密钥仅存内存，邀请链接 #k= 导入后即剥离
+  channel.svelte.ts # UI 状态（Svelte runes），重放去重 + key_updated 处理
+  App.svelte        # 路由 / 和 /r/:id，内存密钥 + Rotate & share / Rotate locally
   protocol.gen.ts   # 自动生成，请勿手动编辑
 
 backend/
-  cmd/server/main.go
-  internal/channel/manager.go  # 内存中的 channel -> 连接映射
-  internal/ws/transport.go     # WS 处理器 + 路由 + 心跳 + 限流
-  internal/ws/codec.go         # 通过 protocol.gen.go 编解码
+  cmd/server/main.go           # 单实例，1m 过期轮询
+  internal/channel/manager.go  # 内存 channel -> 连接 + EmptyTTL 10m / IdleTTL 24h + Expire + maxMembers
+  internal/ws/transport.go     # WS 处理器 + 路由 + 心跳 + 限流（join/leave 20/m、send 10/s+burst+30/s/IP、maxChannels/IP 20）+ key_update 转发
+  internal/ws/codec.go         # 通过 protocol.gen.go 编解码（含 key_update）
   internal/ws/limiter.go      # 固定窗口限流器
   internal/protocol/gen.go     # 自动生成
 
@@ -78,8 +78,8 @@ docker compose up --build  # 前端 :80，后端 :8080
 
 ## 通信协议
 
-客户端 → 服务端：`create_channel`、`join_channel`、`leave_channel`、`send_message`
-服务端 → 客户端：`channel_created`、`joined`、`left`、`message`、`online_count`、`error`
+客户端 → 服务端：`create_channel`、`join_channel`、`leave_channel`、`send_message`、`key_update`（E2EE 封装新钥）
+服务端 → 客户端：`channel_created`、`joined`、`left`、`message`、`key_updated`、`online_count`、`error`
 
 `message.from` 是临时的连接 ID（`peer-` + 每个 WebSocket 连接 4 字节随机数，重连时重新生成，见 `backend/internal/ws/transport.go:210`）——**不是**稳定的身份标识（P6）。不持久化任何历史记录（仅中继，见 `backend/internal/channel/manager.go:11`）；重新加入不会重放历史消息。最小限度的 `rate_limited` 限流（`create 5次/分钟 每个IP+每个连接`，`send 10次/秒 每个连接`）。
 
@@ -87,13 +87,16 @@ docker compose up --build  # 前端 :80，后端 :8080
 
 ## 安全说明
 
-- **端到端加密**：`AES-GCM-256`，`12B IV` 永不重用，每条消息 `16B messageId`，`AAD v1|channelId|messageId` 绑定，房间密钥为每房间 `32B` 通过 `crypto.getRandomValues` 生成，仅存于标签页内存，非永久（P5 轮换）；密钥仅经邀请链接 hash `#k=` 传输一次，导入后即剥离，永不发送到服务端；导入时严格校验 43 字符 base64url。
+- **端到端加密**：`AES-GCM-256`，`12B IV` 永不重用，每条消息 `16B messageId`，`AAD v1|channelId|messageId` 绑定，房间密钥为每房间 `32B` 通过 `crypto.getRandomValues` 生成，仅存于标签页内存；P5 复用同一信封 `wrapNewKey`/`unwrapNewKey` 轮换。
+- **隐私增强（P4）**：无明文持久化 —— 服务端仅中继（`backend/internal/channel/manager.go:24`），内存 `map[channelId]*channelInfo` 单实例（重启丢状态），房间过期空房 10m / 闲置 24h 通过 1m 轮询 `ExpireNow()`（`backend/cmd/server/main.go:21`），安全日志仅 `listening` + `expired N channels`，元数据最小化。
+- **重放/完整性（P5）**：每房间 `ReplayCache` LRU 1000 对 `messageIdB64` 去重（`frontend/src/e2ee.ts:51`、`frontend/src/channel.svelte.ts:106`），`isValidEnvelope` 预校验 12B iv/16B mid/≥16B ct；GCM tag+AAD 保 outsider 完整性，insider 伪造需 P6 身份；XSS 载荷经 `MessageList.svelte:34,56` 文本插值安全。
+- **密钥轮换/成员移除（P5）**：`key_update` → `key_updated` E2EE 封装广播（`protocol/schema.json:66`、`backend/internal/ws/transport.go:210`、`frontend/src/e2ee.ts:170`）服务端只转发；协作式剔除 = `Rotate locally` 本地轮换不广播。
 - 服务端永不记录明文；服务端仅原样中继 `payload`，只能看到密文（已通过 `e2ee.test.ts` 验证）。
-- `protocol/schema.json` 校验在两端强制执行（Go 端 go-jsonschema UnmarshalJSON + TS 端 codec）
-- `from` 为按连接隔离，非身份标识；按设计不持久化历史记录
-- 最小限流：`create 5次/分钟`，`send 10次/秒`（`backend/internal/ws/limiter.go:1`），心跳 30 秒 Ping/Pong（`backend/internal/ws/transport.go:49`）
+- `protocol/schema.json` 校验在两端强制执行
+- **限流（P5）**：`create 5次/分钟 per-IP+per-conn +20次/小时 per-IP`、`join/leave 20次/分钟 per-conn`、`send/key_update 10次/秒 per-conn burst20 +30次/秒 per-IP`、`maxMembers 100`（`backend/internal/ws/limiter.go:1`），心跳 30s Ping/Pong。
+- **CSP（P5）**：`frontend/index.html:8` + `frontend/nginx.conf:6` `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'` + `nosniff`。
 - 生产环境应使用 HTTPS/WSS 并限制 `InsecureSkipVerify`
 
 ## 路线图
 
-P0 基础已完成，P1 最小化聊天已完成，P2 端到端加密已完成，P3 房间密钥已完成 —— 详见 `ROADMAP.md`。下一步为 P4 隐私（无明文持久化、内存态房间、房间过期、安全日志、元数据审查）。
+P0 基础已完成，P1 最小化聊天已完成，P2 端到端加密已完成，P3 房间密钥已完成，P4 隐私已完成，P5 安全已完成 —— 详见 `ROADMAP.md`。下一步为 P6 匿名身份（身份密钥、展示身份、验证）。
