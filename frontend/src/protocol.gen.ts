@@ -13,10 +13,12 @@ export type ChatProtocol =
   | JoinChannel
   | LeaveChannel
   | SendMessage
+  | KeyUpdate
   | ChannelCreated
   | Joined
   | Left
   | BroadcastMessage
+  | KeyUpdated
   | OnlineCount
   | Error;
 
@@ -43,6 +45,17 @@ export interface LeaveChannel {
 export interface SendMessage {
   type: "send_message";
   channelId: string;
+  payload: string;
+}
+/**
+ * Client -> Server: E2EE-wrapped new room key (old key encrypts {k: base64url 43chars, v:1})
+ */
+export interface KeyUpdate {
+  type: "key_update";
+  channelId: string;
+  /**
+   * E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag)
+   */
   payload: string;
 }
 /**
@@ -74,6 +87,22 @@ export interface BroadcastMessage {
   from: string;
   /**
    * True if this message is from self (per-recipient)
+   */
+  self?: boolean;
+}
+/**
+ * Server -> Client: broadcast E2EE-wrapped new key
+ */
+export interface KeyUpdated {
+  type: "key_updated";
+  channelId: string;
+  payload: string;
+  /**
+   * Ephemeral sender id
+   */
+  from: string;
+  /**
+   * True if from self
    */
   self?: boolean;
 }

@@ -426,6 +426,156 @@ func (j *Joined) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+// Client -> Server: E2EE-wrapped new room key (old key encrypts {k: base64url
+// 43chars, v:1})
+type KeyUpdate struct {
+	// ChannelId corresponds to the JSON schema field "channelId".
+	ChannelId string `json:"channelId"`
+
+	// E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag)
+	Payload string `json:"payload"`
+
+	// Type corresponds to the JSON schema field "type".
+	Type KeyUpdateType `json:"type"`
+}
+
+type KeyUpdateType string
+
+const KeyUpdateTypeKeyUpdate KeyUpdateType = "key_update"
+
+var enumValues_KeyUpdateType = []interface{}{
+	"key_update",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *KeyUpdateType) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_KeyUpdateType {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_KeyUpdateType, v)
+	}
+	*j = KeyUpdateType(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *KeyUpdate) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["channelId"]; raw != nil && !ok {
+		return fmt.Errorf("field channelId in KeyUpdate: required")
+	}
+	if _, ok := raw["payload"]; raw != nil && !ok {
+		return fmt.Errorf("field payload in KeyUpdate: required")
+	}
+	if _, ok := raw["type"]; raw != nil && !ok {
+		return fmt.Errorf("field type in KeyUpdate: required")
+	}
+	type Plain KeyUpdate
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]{1,64}$`, string(plain.ChannelId)); !matched {
+		return fmt.Errorf("field %s pattern match: must match %s", "ChannelId", `^[a-zA-Z0-9_-]{1,64}$`)
+	}
+	if utf8.RuneCountInString(string(plain.Payload)) > 8192 {
+		return fmt.Errorf("field %s length: must be <= %d", "payload", 8192)
+	}
+	*j = KeyUpdate(plain)
+	return nil
+}
+
+// Server -> Client: broadcast E2EE-wrapped new key
+type KeyUpdated struct {
+	// ChannelId corresponds to the JSON schema field "channelId".
+	ChannelId string `json:"channelId"`
+
+	// Ephemeral sender id
+	From string `json:"from"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload string `json:"payload"`
+
+	// True if from self
+	Self *bool `json:"self,omitempty,omitzero"`
+
+	// Type corresponds to the JSON schema field "type".
+	Type KeyUpdatedType `json:"type"`
+}
+
+type KeyUpdatedType string
+
+const KeyUpdatedTypeKeyUpdated KeyUpdatedType = "key_updated"
+
+var enumValues_KeyUpdatedType = []interface{}{
+	"key_updated",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *KeyUpdatedType) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_KeyUpdatedType {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_KeyUpdatedType, v)
+	}
+	*j = KeyUpdatedType(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *KeyUpdated) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["channelId"]; raw != nil && !ok {
+		return fmt.Errorf("field channelId in KeyUpdated: required")
+	}
+	if _, ok := raw["from"]; raw != nil && !ok {
+		return fmt.Errorf("field from in KeyUpdated: required")
+	}
+	if _, ok := raw["payload"]; raw != nil && !ok {
+		return fmt.Errorf("field payload in KeyUpdated: required")
+	}
+	if _, ok := raw["type"]; raw != nil && !ok {
+		return fmt.Errorf("field type in KeyUpdated: required")
+	}
+	type Plain KeyUpdated
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]{1,64}$`, string(plain.ChannelId)); !matched {
+		return fmt.Errorf("field %s pattern match: must match %s", "ChannelId", `^[a-zA-Z0-9_-]{1,64}$`)
+	}
+	if utf8.RuneCountInString(string(plain.Payload)) > 8192 {
+		return fmt.Errorf("field %s length: must be <= %d", "payload", 8192)
+	}
+	*j = KeyUpdated(plain)
+	return nil
+}
+
 type LeaveChannel struct {
 	// ChannelId corresponds to the JSON schema field "channelId".
 	ChannelId string `json:"channelId"`

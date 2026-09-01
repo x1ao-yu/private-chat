@@ -9,10 +9,12 @@
     { "$ref": "#/$defs/JoinChannel" },
     { "$ref": "#/$defs/LeaveChannel" },
     { "$ref": "#/$defs/SendMessage" },
+    { "$ref": "#/$defs/KeyUpdate" },
     { "$ref": "#/$defs/ChannelCreated" },
     { "$ref": "#/$defs/Joined" },
     { "$ref": "#/$defs/Left" },
     { "$ref": "#/$defs/BroadcastMessage" },
+    { "$ref": "#/$defs/KeyUpdated" },
     { "$ref": "#/$defs/OnlineCount" },
     { "$ref": "#/$defs/Error" }
   ],
@@ -63,6 +65,18 @@
       "required": ["type", "channelId", "payload"],
       "additionalProperties": false
     },
+    "KeyUpdate": {
+      "type": "object",
+      "title": "KeyUpdate",
+      "description": "Client -> Server: E2EE-wrapped new room key (old key encrypts {k: base64url 43chars, v:1})",
+      "properties": {
+        "type": { "type": "string", "enum": ["key_update"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "payload": { "type": "string", "maxLength": 8192, "description": "E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag)" }
+      },
+      "required": ["type", "channelId", "payload"],
+      "additionalProperties": false
+    },
     "ChannelCreated": {
       "type": "object",
       "title": "ChannelCreated",
@@ -105,6 +119,20 @@
         "payload": { "type": "string", "maxLength": 8192 },
         "from": { "type": "string", "description": "Ephemeral sender id (not persisted)" },
         "self": { "type": "boolean", "description": "True if this message is from self (per-recipient)" }
+      },
+      "required": ["type", "channelId", "payload", "from"],
+      "additionalProperties": false
+    },
+    "KeyUpdated": {
+      "type": "object",
+      "title": "KeyUpdated",
+      "description": "Server -> Client: broadcast E2EE-wrapped new key",
+      "properties": {
+        "type": { "type": "string", "enum": ["key_updated"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "payload": { "type": "string", "maxLength": 8192 },
+        "from": { "type": "string", "description": "Ephemeral sender id" },
+        "self": { "type": "boolean", "description": "True if from self" }
       },
       "required": ["type", "channelId", "payload", "from"],
       "additionalProperties": false
