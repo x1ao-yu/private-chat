@@ -7,6 +7,7 @@
 
   let {
     rooms = [],
+    roomNames = new Map<string, string>(),
     activeId = "",
     creating = false,
     joinInput = $bindable(""),
@@ -15,6 +16,7 @@
     onNavigate,
   }: {
     rooms?: RoomEntry[];
+    roomNames?: Map<string, string>;
     activeId?: string;
     creating?: boolean;
     joinInput?: string;
@@ -75,12 +77,14 @@
   <!-- Room list -->
   <div class="min-h-0 flex-1 overflow-y-auto p-2">
     {#each rooms as room (room.id)}
+      {@const displayName = roomNames.get(room.id) ?? `Room: ${room.id}`}
       <button
         class="w-full rounded-lg px-3 py-2.5 text-left transition-colors {room.id === activeId ? 'bg-brand-subtle' : 'hover:bg-zinc-100'}"
         onclick={() => onNavigate(room.id)}
+        title={roomNames.get(room.id) ? `${roomNames.get(room.id)} (${room.id})` : room.id}
       >
         <div class="truncate text-sm font-semibold {room.id === activeId ? 'text-brand' : 'text-zinc-800'}">
-          Room: {room.id}
+          {displayName}
         </div>
         <div class="mt-0.5 flex items-center gap-1.5 text-xs text-zinc-500">
           {#if room.connected}
