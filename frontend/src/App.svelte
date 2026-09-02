@@ -239,6 +239,10 @@
     if (!id || !channelStore) { lastOnlineForSync = online; return; }
     if (online <= lastOnlineForSync) { lastOnlineForSync = online; return; }
     lastOnlineForSync = online;
+    // a newly joined member cannot know our names (and neither can a fresh
+    // reconnect) — re-announce despite lastBroadcast* dedup
+    lastBroadcastNick = null;
+    lastBroadcastRoomName = null;
     const nick = selfNicks.get(id);
     if (nick && isValidNick(nick) && nick !== lastBroadcastNick) {
       const k = roomKeys.get(id);
