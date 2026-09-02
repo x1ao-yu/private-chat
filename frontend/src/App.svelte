@@ -31,6 +31,8 @@
   let messagesEl: HTMLDivElement | null = $state(null);
   let keyInput = $state("");
   let keyError: string | null = $state(null);
+  let copyFeedback: "ok" | "fail" | null = $state(null);
+  let copyFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
   let rotating = $state(false);
   let drawerOpen = $state(false);
   let createRoomName = $state("");
@@ -462,14 +464,21 @@
       keyError = e instanceof Error ? e.message : String(e);
     }
   }
-  function copyInviteLink() {
+  async function copyInviteLink() {
     // rebuild the invite link from the in-memory key when the URL no longer
     // carries it; without a key the joiner lands on the paste-key panel
     const b64 = channelId ? roomKeyB64.get(channelId) : undefined;
     const link = b64
       ? `${location.origin}/r/${channelId}#k=${encodeURIComponent(b64)}`
       : location.href;
-    navigator.clipboard.writeText(link);
+    try {
+      await navigator.clipboard.writeText(link);
+      copyFeedback = "ok";
+    } catch {
+      copyFeedback = "fail";
+    }
+    if (copyFeedbackTimer) clearTimeout(copyFeedbackTimer);
+    copyFeedbackTimer = setTimeout(() => (copyFeedback = null), 2000);
   }
 
   async function rotateKeyViaE2EE() {
@@ -676,14 +685,14 @@
         </div>
         <div class="flex items-center gap-1">
           <button
-            class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium text-brand hover:bg-brand-subtle"
+            class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium {copyFeedback === 'fail' ? 'text-red-600 hover:bg-red-50' : 'text-brand hover:bg-brand-subtle'}"
             onclick={copyInviteLink}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
             </svg>
-            Copy link
+            {copyFeedback === "ok" ? "Copied ✓" : copyFeedback === "fail" ? "Copy failed" : "Copy link"}
           </button>
           {#if channelStore}
             <button
