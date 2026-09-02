@@ -261,30 +261,6 @@
     const ok = await channelStore.sendMessage(input);
     if (ok) input = "";
   }
-  async function createRoom() {
-    // legacy direct create (fallback); /create route uses handleCreateRoom
-    if (creating) return;
-    creating = true;
-    createError = null;
-    try {
-      if (!isCryptoAvailable()) throw new Error("Web Crypto unavailable");
-      const tmpKey = await generateRoomKey();
-      const keyB64 = await exportRoomKey(tmpKey);
-      const key = await importRoomKey(keyB64);
-      const id = await createChannel();
-      roomKeys.set(id, key);
-      roomKeyB64.set(id, keyB64);
-      if (createRoomName.trim() && isValidRoomName(createRoomName)) { roomNames.set(id, createRoomName.trim()); roomNamesVersion++; }
-      if (createNick.trim() && isValidNick(createNick)) { selfNicks.set(id, createNick.trim()); peerNicks.set(`${id}:self`, createNick.trim()); peerNicksVersion++; }
-      navigate(`/r/${id}`);
-      createRoomName = "";
-      createNick = "";
-    } catch (e) {
-      createError = e instanceof Error ? e.message : String(e);
-    } finally {
-      creating = false;
-    }
-  }
 
   async function handleCreateRoom() {
     if (creating) return;

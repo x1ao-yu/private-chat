@@ -158,7 +158,7 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 			}
 			broadcastOnlineCount(ctx, s.Manager, v.ChannelId)
 		case *protocol.SendMessage:
-			// per-conn 10/s burst 20 + per-IP 30/s
+			// per-conn 10/s fixed-window + per-IP 30/s (worst case ~20 across window boundary)
 			ip := clientIP(r)
 			connSendKey := fmt.Sprintf("%p:send", c)
 			if !s.limiter.Allow(connSendKey, 10, time.Second) {
@@ -202,7 +202,7 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 				cancel()
 			}
 		case *protocol.KeyUpdate:
-			// same limits as send: 10/s per-conn burst20 + 30/s per-IP
+			// same limits as send: 10/s per-conn fixed-window + 30/s per-IP
 			ip := clientIP(r)
 			connKeyUpdateKey := fmt.Sprintf("%p:send", c)
 			if !s.limiter.Allow(connKeyUpdateKey, 10, time.Second) {
@@ -389,11 +389,4 @@ func generateClientID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
 	return "peer-" + hex.EncodeToString(b)
-}
-
-// Legacy handler for tests that don't need manager (echo). Kept for compatibility.
-func Handler(w http.ResponseWriter, r *http.Request) {
-	m := channel.New()
-	s := NewServer(m)
-	s.Handler(w, r)
 }
