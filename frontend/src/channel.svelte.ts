@@ -162,6 +162,10 @@ export class ChannelStore {
           break;
         }
         case "key_updated": {
+          // the rotator already switched crypto locally before this self echo
+          // arrives; unwrapping the old-key payload with the new key would
+          // always fail, so ignore it
+          if (msg.self) break;
           if (!isValidEnvelope(msg.payload)) {
             this.error = "invalid key_update envelope";
             break;

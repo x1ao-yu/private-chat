@@ -22,8 +22,8 @@ function msgFrame(channelId: string, payload: string): string {
   return JSON.stringify({ type: "message", channelId, payload, from: "peer-abcd1234", self: false });
 }
 
-function updatedFrame(kind: "key_updated" | "room_name_updated" | "nickname_updated", channelId: string, payload: string, from: string): string {
-  return JSON.stringify({ type: kind, channelId, payload, from, self: false });
+function updatedFrame(kind: "key_updated" | "room_name_updated" | "nickname_updated", channelId: string, payload: string, from: string, self = false): string {
+  return JSON.stringify({ type: kind, channelId, payload, from, self });
 }
 
 async function makeCrypto(channelId = CH): Promise<Crypto> {
@@ -171,6 +171,26 @@ describe("ChannelStore", () => {
     ws.simulateMessage(msgFrame(CH, await oldCrypto.encrypt("still old key")));
     await tick();
     expect(store.messages[store.messages.length - 1].payload).toBe("still old key");
+    store.disconnect();
+  });
+
+  it("ignores own key_updated echo (rotator already switched locally)", async () => {
+    const oldCrypto = await makeCrypto();
+    const { store, ws } = await openStore(CH, oldCrypto);
+
+    const newKeyB64 = await exportRoomKey(await generateRoomKey());
+    const newCrypto = createAesGcmCrypto(await importRoomKey(newKeyB64), CH);
+    store.updateCrypto(newCrypto); // what rotateKeyViaE2EE does before the echo arrives
+    const wrapped = await wrapNewKey(oldCrypto, newKeyB64); // sealed with the OLD key
+    ws.simulateMessage(updatedFrame("key_updated", CH, wrapped, "peer-self", true));
+    await tick();
+    expect(store.error).toBeNull();
+    expect(store.messages.filter((m) => m.sys?.sysKind === "key_rotation")).toHaveLength(0);
+
+    // the (already active) new key keeps working for normal traffic
+    ws.simulateMessage(msgFrame(CH, await newCrypto.encrypt("still fine")));
+    await tick();
+    expect(store.messages[store.messages.length - 1].payload).toBe("still fine");
     store.disconnect();
   });
 
