@@ -14,11 +14,15 @@ export type ChatProtocol =
   | LeaveChannel
   | SendMessage
   | KeyUpdate
+  | SetRoomName
+  | SetNickname
   | ChannelCreated
   | Joined
   | Left
   | BroadcastMessage
   | KeyUpdated
+  | RoomNameUpdated
+  | NicknameUpdated
   | OnlineCount
   | Error;
 
@@ -54,7 +58,29 @@ export interface KeyUpdate {
   type: "key_update";
   channelId: string;
   /**
-   * E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag)
+   * E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag) inner JSON {k:43chars,v:1}
+   */
+  payload: string;
+}
+/**
+ * Client -> Server: E2EE-wrapped room display name inner JSON {t:"room_name",v:1,name:1-32chars}
+ */
+export interface SetRoomName {
+  type: "set_room_name";
+  channelId: string;
+  /**
+   * E2EE envelope inner {t:"room_name",v:1,name:string}
+   */
+  payload: string;
+}
+/**
+ * Client -> Server: E2EE-wrapped nickname inner JSON {t:"nick",v:1,nick:1-20chars}
+ */
+export interface SetNickname {
+  type: "set_nickname";
+  channelId: string;
+  /**
+   * E2EE envelope inner {t:"nick",v:1,nick:string}
    */
   payload: string;
 }
@@ -95,6 +121,38 @@ export interface BroadcastMessage {
  */
 export interface KeyUpdated {
   type: "key_updated";
+  channelId: string;
+  payload: string;
+  /**
+   * Ephemeral sender id
+   */
+  from: string;
+  /**
+   * True if from self
+   */
+  self?: boolean;
+}
+/**
+ * Server -> Client: broadcast E2EE-wrapped room name
+ */
+export interface RoomNameUpdated {
+  type: "room_name_updated";
+  channelId: string;
+  payload: string;
+  /**
+   * Ephemeral sender id
+   */
+  from: string;
+  /**
+   * True if from self
+   */
+  self?: boolean;
+}
+/**
+ * Server -> Client: broadcast E2EE-wrapped nickname
+ */
+export interface NicknameUpdated {
+  type: "nickname_updated";
   channelId: string;
   payload: string;
   /**

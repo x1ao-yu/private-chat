@@ -432,7 +432,8 @@ type KeyUpdate struct {
 	// ChannelId corresponds to the JSON schema field "channelId".
 	ChannelId string `json:"channelId"`
 
-	// E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag)
+	// E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag) inner JSON
+	// {k:43chars,v:1}
 	Payload string `json:"payload"`
 
 	// Type corresponds to the JSON schema field "type".
@@ -696,6 +697,85 @@ func (j *Left) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+// Server -> Client: broadcast E2EE-wrapped nickname
+type NicknameUpdated struct {
+	// ChannelId corresponds to the JSON schema field "channelId".
+	ChannelId string `json:"channelId"`
+
+	// Ephemeral sender id
+	From string `json:"from"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload string `json:"payload"`
+
+	// True if from self
+	Self *bool `json:"self,omitempty,omitzero"`
+
+	// Type corresponds to the JSON schema field "type".
+	Type NicknameUpdatedType `json:"type"`
+}
+
+type NicknameUpdatedType string
+
+const NicknameUpdatedTypeNicknameUpdated NicknameUpdatedType = "nickname_updated"
+
+var enumValues_NicknameUpdatedType = []interface{}{
+	"nickname_updated",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *NicknameUpdatedType) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_NicknameUpdatedType {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_NicknameUpdatedType, v)
+	}
+	*j = NicknameUpdatedType(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *NicknameUpdated) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["channelId"]; raw != nil && !ok {
+		return fmt.Errorf("field channelId in NicknameUpdated: required")
+	}
+	if _, ok := raw["from"]; raw != nil && !ok {
+		return fmt.Errorf("field from in NicknameUpdated: required")
+	}
+	if _, ok := raw["payload"]; raw != nil && !ok {
+		return fmt.Errorf("field payload in NicknameUpdated: required")
+	}
+	if _, ok := raw["type"]; raw != nil && !ok {
+		return fmt.Errorf("field type in NicknameUpdated: required")
+	}
+	type Plain NicknameUpdated
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]{1,64}$`, string(plain.ChannelId)); !matched {
+		return fmt.Errorf("field %s pattern match: must match %s", "ChannelId", `^[a-zA-Z0-9_-]{1,64}$`)
+	}
+	if utf8.RuneCountInString(string(plain.Payload)) > 8192 {
+		return fmt.Errorf("field %s length: must be <= %d", "payload", 8192)
+	}
+	*j = NicknameUpdated(plain)
+	return nil
+}
+
 type OnlineCount struct {
 	// ChannelId corresponds to the JSON schema field "channelId".
 	ChannelId string `json:"channelId"`
@@ -762,6 +842,85 @@ func (j *OnlineCount) UnmarshalJSON(value []byte) error {
 		return fmt.Errorf("field %s: must be >= %v", "count", 0)
 	}
 	*j = OnlineCount(plain)
+	return nil
+}
+
+// Server -> Client: broadcast E2EE-wrapped room name
+type RoomNameUpdated struct {
+	// ChannelId corresponds to the JSON schema field "channelId".
+	ChannelId string `json:"channelId"`
+
+	// Ephemeral sender id
+	From string `json:"from"`
+
+	// Payload corresponds to the JSON schema field "payload".
+	Payload string `json:"payload"`
+
+	// True if from self
+	Self *bool `json:"self,omitempty,omitzero"`
+
+	// Type corresponds to the JSON schema field "type".
+	Type RoomNameUpdatedType `json:"type"`
+}
+
+type RoomNameUpdatedType string
+
+const RoomNameUpdatedTypeRoomNameUpdated RoomNameUpdatedType = "room_name_updated"
+
+var enumValues_RoomNameUpdatedType = []interface{}{
+	"room_name_updated",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *RoomNameUpdatedType) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_RoomNameUpdatedType {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_RoomNameUpdatedType, v)
+	}
+	*j = RoomNameUpdatedType(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *RoomNameUpdated) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["channelId"]; raw != nil && !ok {
+		return fmt.Errorf("field channelId in RoomNameUpdated: required")
+	}
+	if _, ok := raw["from"]; raw != nil && !ok {
+		return fmt.Errorf("field from in RoomNameUpdated: required")
+	}
+	if _, ok := raw["payload"]; raw != nil && !ok {
+		return fmt.Errorf("field payload in RoomNameUpdated: required")
+	}
+	if _, ok := raw["type"]; raw != nil && !ok {
+		return fmt.Errorf("field type in RoomNameUpdated: required")
+	}
+	type Plain RoomNameUpdated
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]{1,64}$`, string(plain.ChannelId)); !matched {
+		return fmt.Errorf("field %s pattern match: must match %s", "ChannelId", `^[a-zA-Z0-9_-]{1,64}$`)
+	}
+	if utf8.RuneCountInString(string(plain.Payload)) > 8192 {
+		return fmt.Errorf("field %s length: must be <= %d", "payload", 8192)
+	}
+	*j = RoomNameUpdated(plain)
 	return nil
 }
 
@@ -836,5 +995,146 @@ func (j *SendMessage) UnmarshalJSON(value []byte) error {
 		return fmt.Errorf("field %s length: must be <= %d", "payload", 8192)
 	}
 	*j = SendMessage(plain)
+	return nil
+}
+
+// Client -> Server: E2EE-wrapped nickname inner JSON {t:"nick",v:1,nick:1-20chars}
+type SetNickname struct {
+	// ChannelId corresponds to the JSON schema field "channelId".
+	ChannelId string `json:"channelId"`
+
+	// E2EE envelope inner {t:"nick",v:1,nick:string}
+	Payload string `json:"payload"`
+
+	// Type corresponds to the JSON schema field "type".
+	Type SetNicknameType `json:"type"`
+}
+
+type SetNicknameType string
+
+const SetNicknameTypeSetNickname SetNicknameType = "set_nickname"
+
+var enumValues_SetNicknameType = []interface{}{
+	"set_nickname",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *SetNicknameType) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_SetNicknameType {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_SetNicknameType, v)
+	}
+	*j = SetNicknameType(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *SetNickname) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["channelId"]; raw != nil && !ok {
+		return fmt.Errorf("field channelId in SetNickname: required")
+	}
+	if _, ok := raw["payload"]; raw != nil && !ok {
+		return fmt.Errorf("field payload in SetNickname: required")
+	}
+	if _, ok := raw["type"]; raw != nil && !ok {
+		return fmt.Errorf("field type in SetNickname: required")
+	}
+	type Plain SetNickname
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]{1,64}$`, string(plain.ChannelId)); !matched {
+		return fmt.Errorf("field %s pattern match: must match %s", "ChannelId", `^[a-zA-Z0-9_-]{1,64}$`)
+	}
+	if utf8.RuneCountInString(string(plain.Payload)) > 8192 {
+		return fmt.Errorf("field %s length: must be <= %d", "payload", 8192)
+	}
+	*j = SetNickname(plain)
+	return nil
+}
+
+// Client -> Server: E2EE-wrapped room display name inner JSON
+// {t:"room_name",v:1,name:1-32chars}
+type SetRoomName struct {
+	// ChannelId corresponds to the JSON schema field "channelId".
+	ChannelId string `json:"channelId"`
+
+	// E2EE envelope inner {t:"room_name",v:1,name:string}
+	Payload string `json:"payload"`
+
+	// Type corresponds to the JSON schema field "type".
+	Type SetRoomNameType `json:"type"`
+}
+
+type SetRoomNameType string
+
+const SetRoomNameTypeSetRoomName SetRoomNameType = "set_room_name"
+
+var enumValues_SetRoomNameType = []interface{}{
+	"set_room_name",
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *SetRoomNameType) UnmarshalJSON(value []byte) error {
+	var v string
+	if err := json.Unmarshal(value, &v); err != nil {
+		return err
+	}
+	var ok bool
+	for _, expected := range enumValues_SetRoomNameType {
+		if reflect.DeepEqual(v, expected) {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_SetRoomNameType, v)
+	}
+	*j = SetRoomNameType(v)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *SetRoomName) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["channelId"]; raw != nil && !ok {
+		return fmt.Errorf("field channelId in SetRoomName: required")
+	}
+	if _, ok := raw["payload"]; raw != nil && !ok {
+		return fmt.Errorf("field payload in SetRoomName: required")
+	}
+	if _, ok := raw["type"]; raw != nil && !ok {
+		return fmt.Errorf("field type in SetRoomName: required")
+	}
+	type Plain SetRoomName
+	var plain Plain
+	if err := json.Unmarshal(value, &plain); err != nil {
+		return err
+	}
+	if matched, _ := regexp.MatchString(`^[a-zA-Z0-9_-]{1,64}$`, string(plain.ChannelId)); !matched {
+		return fmt.Errorf("field %s pattern match: must match %s", "ChannelId", `^[a-zA-Z0-9_-]{1,64}$`)
+	}
+	if utf8.RuneCountInString(string(plain.Payload)) > 8192 {
+		return fmt.Errorf("field %s length: must be <= %d", "payload", 8192)
+	}
+	*j = SetRoomName(plain)
 	return nil
 }

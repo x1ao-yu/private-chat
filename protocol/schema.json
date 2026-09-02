@@ -10,11 +10,15 @@
     { "$ref": "#/$defs/LeaveChannel" },
     { "$ref": "#/$defs/SendMessage" },
     { "$ref": "#/$defs/KeyUpdate" },
+    { "$ref": "#/$defs/SetRoomName" },
+    { "$ref": "#/$defs/SetNickname" },
     { "$ref": "#/$defs/ChannelCreated" },
     { "$ref": "#/$defs/Joined" },
     { "$ref": "#/$defs/Left" },
     { "$ref": "#/$defs/BroadcastMessage" },
     { "$ref": "#/$defs/KeyUpdated" },
+    { "$ref": "#/$defs/RoomNameUpdated" },
+    { "$ref": "#/$defs/NicknameUpdated" },
     { "$ref": "#/$defs/OnlineCount" },
     { "$ref": "#/$defs/Error" }
   ],
@@ -72,7 +76,31 @@
       "properties": {
         "type": { "type": "string", "enum": ["key_update"] },
         "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
-        "payload": { "type": "string", "maxLength": 8192, "description": "E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag)" }
+        "payload": { "type": "string", "maxLength": 8192, "description": "E2EE envelope base64url(iv).base64url(messageId).base64url(ct+tag) inner JSON {k:43chars,v:1}" }
+      },
+      "required": ["type", "channelId", "payload"],
+      "additionalProperties": false
+    },
+    "SetRoomName": {
+      "type": "object",
+      "title": "SetRoomName",
+      "description": "Client -> Server: E2EE-wrapped room display name inner JSON {t:\"room_name\",v:1,name:1-32chars}",
+      "properties": {
+        "type": { "type": "string", "enum": ["set_room_name"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "payload": { "type": "string", "maxLength": 8192, "description": "E2EE envelope inner {t:\"room_name\",v:1,name:string}" }
+      },
+      "required": ["type", "channelId", "payload"],
+      "additionalProperties": false
+    },
+    "SetNickname": {
+      "type": "object",
+      "title": "SetNickname",
+      "description": "Client -> Server: E2EE-wrapped nickname inner JSON {t:\"nick\",v:1,nick:1-20chars}",
+      "properties": {
+        "type": { "type": "string", "enum": ["set_nickname"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "payload": { "type": "string", "maxLength": 8192, "description": "E2EE envelope inner {t:\"nick\",v:1,nick:string}" }
       },
       "required": ["type", "channelId", "payload"],
       "additionalProperties": false
@@ -129,6 +157,34 @@
       "description": "Server -> Client: broadcast E2EE-wrapped new key",
       "properties": {
         "type": { "type": "string", "enum": ["key_updated"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "payload": { "type": "string", "maxLength": 8192 },
+        "from": { "type": "string", "description": "Ephemeral sender id" },
+        "self": { "type": "boolean", "description": "True if from self" }
+      },
+      "required": ["type", "channelId", "payload", "from"],
+      "additionalProperties": false
+    },
+    "RoomNameUpdated": {
+      "type": "object",
+      "title": "RoomNameUpdated",
+      "description": "Server -> Client: broadcast E2EE-wrapped room name",
+      "properties": {
+        "type": { "type": "string", "enum": ["room_name_updated"] },
+        "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
+        "payload": { "type": "string", "maxLength": 8192 },
+        "from": { "type": "string", "description": "Ephemeral sender id" },
+        "self": { "type": "boolean", "description": "True if from self" }
+      },
+      "required": ["type", "channelId", "payload", "from"],
+      "additionalProperties": false
+    },
+    "NicknameUpdated": {
+      "type": "object",
+      "title": "NicknameUpdated",
+      "description": "Server -> Client: broadcast E2EE-wrapped nickname",
+      "properties": {
+        "type": { "type": "string", "enum": ["nickname_updated"] },
         "channelId": { "type": "string", "pattern": "^[a-zA-Z0-9_-]{1,64}$" },
         "payload": { "type": "string", "maxLength": 8192 },
         "from": { "type": "string", "description": "Ephemeral sender id" },
