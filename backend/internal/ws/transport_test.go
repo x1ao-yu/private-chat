@@ -614,3 +614,67 @@ func TestKeyUpdateWithoutJoin(t *testing.T) {
 		t.Fatalf("expected channel_not_found for key_update without join, got %v", e.Code)
 	}
 }
+
+// TestRejoinAfterLeave is the protocol-level regression for the self-destruct
+// bug: a room must survive its last member leaving (EmptyTTL window) so a
+// reconnecting/rejoining client gets `joined`, not channel_not_found.
+func TestRejoinAfterLeave(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c1, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial c1: %v", err)
+	}
+	defer c1.Close(websocket.StatusNormalClosure, "")
+
+	// create + join
+	if err := c1.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+		t.Fatalf("write create: %v", err)
+	}
+	_, data, _ := c1.Read(ctx)
+	var cc protocol.ChannelCreated
+	_ = json.Unmarshal(data, &cc)
+	chID := cc.ChannelId
+	if err := writeJSON(ctx, c1, map[string]string{"type": "join_channel", "channelId": chID}); err != nil {
+		t.Fatalf("write join1: %v", err)
+	}
+	_, _, _ = c1.Read(ctx) // joined
+	_, _, _ = c1.Read(ctx) // online_count
+
+	// last member leaves the channel (WS stays open)
+	if err := writeJSON(ctx, c1, map[string]string{"type": "leave_channel", "channelId": chID}); err != nil {
+		t.Fatalf("write leave: %v", err)
+	}
+	_, data, err = c1.Read(ctx)
+	if err != nil {
+		t.Fatalf("read left: %v", err)
+	}
+	var left protocol.Left
+	if err := json.Unmarshal(data, &left); err != nil {
+		t.Fatalf("left unmarshal: %v", err)
+	}
+	// online_count broadcast is suppressed at count 0 — no further frame expected
+
+	// a fresh connection rejoins the same channel within the EmptyTTL window
+	c2, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial c2: %v", err)
+	}
+	defer c2.Close(websocket.StatusNormalClosure, "")
+	if err := writeJSON(ctx, c2, map[string]string{"type": "join_channel", "channelId": chID}); err != nil {
+		t.Fatalf("write rejoin: %v", err)
+	}
+	_, data, err = c2.Read(ctx)
+	if err != nil {
+		t.Fatalf("read rejoin: %v", err)
+	}
+	var joined protocol.Joined
+	if err := json.Unmarshal(data, &joined); err != nil {
+		t.Fatalf("joined unmarshal: %v data %s", err, string(data))
+	}
+	if joined.Type != protocol.JoinedTypeJoined || joined.Online != 1 {
+		t.Fatalf("expected joined(1) after rejoin, got %+v", joined)
+	}
+}

@@ -101,15 +101,14 @@ func (m *Manager) Touch(channelID string) {
 	}
 }
 
-// Leave removes conn from channel.
+// Leave removes conn from channel. The channel is kept even with 0 members;
+// expiry is solely the sweep's job (EmptyTTL 10m) so transient disconnects
+// (e.g. client reconnect) can rejoin instead of hitting a deleted channel.
 func (m *Manager) Leave(channelID string, conn *websocket.Conn) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if info, ok := m.channels[channelID]; ok {
 		delete(info.conns, conn)
-		if len(info.conns) == 0 {
-			delete(m.channels, channelID)
-		}
 	}
 	if chans, ok := m.connChannels[conn]; ok {
 		delete(chans, channelID)
@@ -119,7 +118,8 @@ func (m *Manager) Leave(channelID string, conn *websocket.Conn) {
 	}
 }
 
-// LeaveAll removes conn from all channels (on disconnect).
+// LeaveAll removes conn from all channels (on disconnect). Channels are kept
+// even when emptied; expiry is solely the sweep's job (EmptyTTL 10m).
 func (m *Manager) LeaveAll(conn *websocket.Conn) []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -132,9 +132,6 @@ func (m *Manager) LeaveAll(conn *websocket.Conn) []string {
 		if info, ok := m.channels[ch]; ok {
 			delete(info.conns, conn)
 			affected = append(affected, ch)
-			if len(info.conns) == 0 {
-				delete(m.channels, ch)
-			}
 		}
 	}
 	delete(m.connChannels, conn)

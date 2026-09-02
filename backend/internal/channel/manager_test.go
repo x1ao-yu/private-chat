@@ -139,3 +139,65 @@ func TestExpireDoesNotAffectFresh(t *testing.T) {
 		t.Fatal("new should still exist")
 	}
 }
+
+func TestLeaveKeepsEmptyChannel(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	m := NewWithNow(func() time.Time { return now })
+	var conn websocket.Conn
+	m.Create("keep1")
+	m.Join("keep1", &conn, "peer-1")
+	m.Leave("keep1", &conn)
+	if !m.Exists("keep1") {
+		t.Fatal("channel should survive last member leaving (rejoin window)")
+	}
+	if m.Count("keep1") != 0 {
+		t.Fatalf("expected count 0, got %d", m.Count("keep1"))
+	}
+	// empty channel is cleaned only by the EmptyTTL sweep
+	now = base.Add(11 * time.Minute)
+	expired := m.Expire(now)
+	if len(expired) != 1 || expired[0] != "keep1" {
+		t.Fatalf("sweep should expire empty channel at 11m, got %v", expired)
+	}
+	if m.Exists("keep1") {
+		t.Fatal("should be gone after sweep")
+	}
+}
+
+func TestLeaveAllKeepsEmptyChannel(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	m := NewWithNow(func() time.Time { return now })
+	var c1, c2 websocket.Conn
+	m.Create("keep2")
+	m.Join("keep2", &c1, "peer-1")
+	m.Join("keep2", &c2, "peer-2")
+	m.LeaveAll(&c1)
+	m.LeaveAll(&c2)
+	if !m.Exists("keep2") {
+		t.Fatal("channel should survive all members disconnecting")
+	}
+	if m.Count("keep2") != 0 {
+		t.Fatalf("expected count 0, got %d", m.Count("keep2"))
+	}
+	now = base.Add(11 * time.Minute)
+	if expired := m.Expire(now); len(expired) != 1 {
+		t.Fatalf("sweep should expire, got %v", expired)
+	}
+}
+
+func TestRejoinAfterLeave(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := base
+	m := NewWithNow(func() time.Time { return now })
+	var c1, c2 websocket.Conn
+	m.Create("rejoin1")
+	m.Join("rejoin1", &c1, "peer-1")
+	m.Leave("rejoin1", &c1)
+	// a new connection joins within the EmptyTTL window -> channel resurrects
+	m.Join("rejoin1", &c2, "peer-2")
+	if m.Count("rejoin1") != 1 {
+		t.Fatalf("expected count 1 after rejoin, got %d", m.Count("rejoin1"))
+	}
+}
