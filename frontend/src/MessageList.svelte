@@ -6,6 +6,7 @@
     peerNicks = new Map<string, string>(),
     selfNicks = new Map<string, string>(),
     roomId = "",
+    peerNicksVersion = 0,
     onCopy,
     onDelete,
   }: {
@@ -13,6 +14,7 @@
     peerNicks?: Map<string, string>;
     selfNicks?: Map<string, string>;
     roomId?: string;
+    peerNicksVersion?: number;
     onCopy: (text: string) => void;
     onDelete: (idx: number) => void;
   } = $props();
@@ -30,6 +32,15 @@
     if (m.from === "system") return "System";
     if (m.self) return selfNicks.get(roomId) ?? "You";
     return peerNicks.get(`${roomId}:${m.from}`) ?? m.from;
+  }
+  function sysText(m: ChatMessage): string {
+    if (!m.sys) return m.payload;
+    // read inside render: re-resolves when a nick arrives after the frame
+    void peerNicksVersion;
+    const nick = peerNicks.get(`${roomId}:${m.sys.actor}`) ?? m.sys.actor;
+    if (m.sys.sysKind === "room_name") return `🏷️ Room name updated to "${m.payload}" by ${nick}`;
+    if (m.sys.sysKind === "key_rotation") return `🔑 Key rotated by ${nick}`;
+    return m.payload;
   }
   function avatarSrc(m: ChatMessage): string {
     const nick = displayNick(m);
@@ -70,7 +81,7 @@
         <div class="min-w-0 flex-1">
           <div class="mb-1 truncate text-sm font-medium text-zinc-700" title={displayNick(m)}>{displayNick(m)}</div>
           <div class="inline-block max-w-[min(70%,36rem)] rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-2.5 text-sm text-zinc-900 whitespace-pre-wrap break-words">
-            {m.payload}
+            {m.sys ? sysText(m) : m.payload}
           </div>
           <div class="mt-1 flex items-center gap-2 text-xs text-zinc-400">
             <span>{fmtTime(m.ts)}</span>

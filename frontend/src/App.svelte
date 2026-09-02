@@ -767,6 +767,7 @@
                 peerNicks={peerNicks}
                 selfNicks={selfNicks}
                 roomId={channelId}
+                peerNicksVersion={peerNicksVersion}
                 onCopy={copyText}
                 onDelete={deleteMessage}
               />

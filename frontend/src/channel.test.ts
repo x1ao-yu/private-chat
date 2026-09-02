@@ -138,7 +138,8 @@ describe("ChannelStore", () => {
 
     expect(onKeyRotated).toHaveBeenCalledTimes(1);
     expect(onKeyRotated.mock.calls[0][0]).toBe(newKeyB64);
-    expect(store.messages.some((m) => m.payload.includes("Key rotated"))).toBe(true);
+    const rotMsg = store.messages.find((m) => m.sys?.sysKind === "key_rotation");
+    expect(rotMsg?.sys?.actor).toBe("peer-rot");
     expect(store.error).toBeNull();
 
     // the store now decrypts envelopes sealed with the new key
@@ -181,13 +182,15 @@ describe("ChannelStore", () => {
     ws.simulateMessage(updatedFrame("room_name_updated", CH, await wrapRoomName(crypto, "My Room"), "peer-namer"));
     await tick();
     expect(onRoomNameUpdated).toHaveBeenCalledWith("My Room", "peer-namer");
-    expect(store.messages.some((m) => m.payload.includes('Room name updated to "My Room"'))).toBe(true);
+    const sysMsg = store.messages.find((m) => m.sys?.sysKind === "room_name");
+    expect(sysMsg?.payload).toBe("My Room");
+    expect(sysMsg?.sys?.actor).toBe("peer-namer");
 
     // a different envelope carrying the same name: callback fires, no duplicate system message
     ws.simulateMessage(updatedFrame("room_name_updated", CH, await wrapRoomName(crypto, "My Room"), "peer-namer"));
     await tick();
     expect(onRoomNameUpdated).toHaveBeenCalledTimes(2);
-    expect(store.messages.filter((m) => m.payload.includes("Room name updated"))).toHaveLength(1);
+    expect(store.messages.filter((m) => m.sys?.sysKind === "room_name")).toHaveLength(1);
 
     // envelope from a stranger (wrong key): error, no callback
     const stranger = await makeCrypto();

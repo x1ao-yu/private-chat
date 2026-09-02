@@ -79,7 +79,11 @@ export async function createChannel(): Promise<string> {
   });
 }
 
-export type ChatMessage = BroadcastMessage & { ts: number };
+export type ChatMessage = BroadcastMessage & {
+  ts: number;
+  /** structured system message; nick is resolved at render time (echoes arrive after the frame) */
+  sys?: { sysKind: "room_name" | "key_rotation"; actor: string };
+};
 
 export type ChannelStoreOptions = {
   onKeyRotated?: (newKeyB64: string, newCrypto: Crypto) => void;
@@ -176,11 +180,10 @@ export class ChannelStore {
             if (mid) this.replayCache.add(mid);
             this.onKeyRotated?.(newKeyB64, newCrypto);
             const ts = Date.now();
-            const sysPayload = `🔑 Key rotated by ${msg.from}`;
-            // system message visible in timeline
+            // system message visible in timeline (actor shown as nick at render time)
             this.messages = [
               ...this.messages,
-              { ...msg, payload: sysPayload, ts } as unknown as ChatMessage,
+              { channelId: msg.channelId, payload: "", from: "system", self: false, ts, sys: { sysKind: "key_rotation", actor: msg.from } } as ChatMessage,
             ];
             this.error = null;
           } catch {
@@ -211,7 +214,7 @@ export class ChannelStore {
             const ts = Date.now();
             this.messages = [
               ...this.messages,
-              { channelId: msg.channelId, payload: `🏷️ Room name updated to "${name}" by ${msg.from}`, from: "system", self: false, ts } as unknown as ChatMessage,
+              { channelId: msg.channelId, payload: name, from: "system", self: false, ts, sys: { sysKind: "room_name", actor: msg.from } } as ChatMessage,
             ];
             this.error = null;
           } catch {
