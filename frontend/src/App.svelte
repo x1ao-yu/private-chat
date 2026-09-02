@@ -3,6 +3,8 @@
   import Sidebar, { type RoomEntry } from "./Sidebar.svelte";
   import MessageList from "./MessageList.svelte";
   import Composer from "./Composer.svelte";
+  import CreateRoomView from "./CreateRoomView.svelte";
+  import JoinNickView from "./JoinNickView.svelte";
   import {
     generateRoomKey,
     exportRoomKey,
@@ -11,6 +13,10 @@
     isCryptoAvailable,
     isRoomKeyB64,
     wrapNewKey,
+    wrapRoomName,
+    wrapNick,
+    isValidRoomName,
+    isValidNick,
   } from "./e2ee.ts";
   import { parseInvite, parseKeyFromHash } from "./invite.ts";
 
@@ -26,6 +32,14 @@
   let keyInput = $state("");
   let keyError: string | null = $state(null);
   let rotating = $state(false);
+  let drawerOpen = $state(false);
+  let createRoomName = $state("");
+  let createNick = $state("");
+  let joinPendingId: string | null = $state(null);
+  let joinPendingKey: string | null = $state(null);
+  let joinNick = $state("");
+  let joinError: string | null = $state(null);
+  let joinCreating = $state(false);
 
   // joined room history for sidebar (in-memory, this tab only)
   let roomHistory = $state<{ id: string; online: number; connected: boolean }[]>([]);
@@ -34,6 +48,16 @@
   // to rebuild invite links — never persisted, never sent to the server
   const roomKeys = new Map<string, CryptoKey>();
   const roomKeyB64 = new Map<string, string>();
+  // P6 prep: display names (tab memory only, per-room, not identity)
+  const roomNames = new Map<string, string>();
+  const selfNicks = new Map<string, string>();
+  const peerNicks = new Map<string, string>(); // `${channelId}:${from}` -> nick
+  let roomNamesVersion = $state(0);
+  let peerNicksVersion = $state(0);
+  let editingRoomName = $state(false);
+  let roomNameDraft = $state("");
+  let editingNick = $state(false);
+  let nickDraft = $state("");
 
   function navigate(to: string) {
     history.pushState({}, "", to);
@@ -69,6 +93,8 @@
   });
 
   let sidebarRooms = $derived.by<RoomEntry[]>(() => {
+    void roomNamesVersion;
+    void peerNicksVersion;
     const active: RoomEntry = {
       id: channelId,
       online: channelStore?.online ?? 0,
@@ -124,12 +150,23 @@
     const id = channelId;
     const hk = pendingHashKey;
     void keyInput;
+    void roomNamesVersion;
+    void peerNicksVersion;
     if (!id) {
       channelStore?.disconnect();
       channelStore = null;
       return;
     }
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return;
+    // Joiner nickname gate: per-room nick required, explicit confirm
+    if (id && !selfNicks.has(id) && path.startsWith("/r/")) {
+      joinPendingId = id;
+      joinPendingKey = hk ?? roomKeyB64.get(id) ?? (keyInput.trim() && isRoomKeyB64(keyInput.trim()) ? keyInput.trim() : null);
+      joinNick = "";
+      joinError = null;
+      queueMicrotask(() => navigate("/join"));
+      return;
+    }
     let cancelled = false;
     let store: ChannelStore | null = null;
     (async () => {
@@ -139,16 +176,38 @@
         if (cancelled) return;
         const s = new ChannelStore(id, crypto, {
           onKeyRotated: (newKeyB64) => {
-            // keep App's maps in sync (P5) — key_updated from peers
             roomKeyB64.set(id, newKeyB64);
             importRoomKey(newKeyB64)
               .then((k) => roomKeys.set(id, k))
               .catch(() => {});
           },
+          onRoomNameUpdated: (name) => {
+            roomNames.set(id, name);
+            roomNamesVersion++;
+          },
+          onNicknameUpdated: (from, nick) => {
+            peerNicks.set(`${id}:${from}`, nick);
+            peerNicksVersion++;
+            if (from === "self") selfNicks.set(id, nick);
+          },
         });
         store = s;
         channelStore = s;
         s.connect();
+        // after connect, broadcast our nick if we have one for this room (per-room) — dedup via lastBroadcastNick to avoid double with online-effect
+        const selfNick = selfNicks.get(id);
+        if (selfNick && isValidNick(selfNick) && selfNick !== lastBroadcastNick) {
+          lastBroadcastNick = selfNick;
+          setTimeout(async () => {
+            try {
+              const k = roomKeys.get(id);
+              if (!k) return;
+              const c = createAesGcmCrypto(k, id);
+              const wrapped = await wrapNick(c, selfNick);
+              await s.sendSetNickname(wrapped);
+            } catch { lastBroadcastNick = null; }
+          }, 500);
+        }
         keyError = null;
       } catch (e) {
         keyError = e instanceof Error ? e.message : String(e);
@@ -169,12 +228,41 @@
     }
   });
 
+  // re-broadcast display names when peers join (so new members learn existing names) — plain var to avoid $effect loop
+  let lastOnlineForSync = 0;
+  let lastBroadcastNick: string | null = null;
+  let lastBroadcastRoomName: string | null = null;
+  $effect(() => {
+    const online = channelStore?.online ?? 0;
+    const id = channelId;
+    if (!id || !channelStore) { lastOnlineForSync = online; return; }
+    if (online <= lastOnlineForSync) { lastOnlineForSync = online; return; }
+    lastOnlineForSync = online;
+    const nick = selfNicks.get(id);
+    if (nick && isValidNick(nick) && nick !== lastBroadcastNick) {
+      const k = roomKeys.get(id);
+      if (k) {
+        lastBroadcastNick = nick;
+        wrapNick(createAesGcmCrypto(k, id), nick).then(w => channelStore?.sendSetNickname(w)).catch(()=>{ lastBroadcastNick = null; });
+      }
+    }
+    const rname = roomNames.get(id);
+    if (rname && isValidRoomName(rname) && rname !== lastBroadcastRoomName) {
+      const k2 = roomKeys.get(id);
+      if (k2) {
+        lastBroadcastRoomName = rname;
+        wrapRoomName(createAesGcmCrypto(k2, id), rname).then(w => channelStore?.sendSetRoomName(w)).catch(()=>{ lastBroadcastRoomName = null; });
+      }
+    }
+  });
+
   async function handleSend() {
     if (!channelStore || !input.trim()) return;
     const ok = await channelStore.sendMessage(input);
     if (ok) input = "";
   }
   async function createRoom() {
+    // legacy direct create (fallback); /create route uses handleCreateRoom
     if (creating) return;
     creating = true;
     createError = null;
@@ -186,18 +274,100 @@
       const id = await createChannel();
       roomKeys.set(id, key);
       roomKeyB64.set(id, keyB64);
-      // no hash: the key reaches the room via memory, not the URL/history
+      if (createRoomName.trim() && isValidRoomName(createRoomName)) { roomNames.set(id, createRoomName.trim()); roomNamesVersion++; }
+      if (createNick.trim() && isValidNick(createNick)) { selfNicks.set(id, createNick.trim()); peerNicks.set(`${id}:self`, createNick.trim()); peerNicksVersion++; }
       navigate(`/r/${id}`);
+      createRoomName = "";
+      createNick = "";
     } catch (e) {
       createError = e instanceof Error ? e.message : String(e);
     } finally {
       creating = false;
     }
   }
+
+  async function handleCreateRoom() {
+    if (creating) return;
+    if (!createRoomName.trim() || !isValidRoomName(createRoomName)) {
+      createError = "Room name 1-32 chars, no newline";
+      return;
+    }
+    if (!createNick.trim() || !isValidNick(createNick)) {
+      createError = "Nickname 1-20 chars, no newline";
+      return;
+    }
+    creating = true;
+    createError = null;
+    try {
+      if (!isCryptoAvailable()) throw new Error("Web Crypto unavailable");
+      const tmpKey = await generateRoomKey();
+      const keyB64 = await exportRoomKey(tmpKey);
+      const key = await importRoomKey(keyB64);
+      const id = await createChannel();
+      roomKeys.set(id, key);
+      roomKeyB64.set(id, keyB64);
+      roomNames.set(id, createRoomName.trim());
+      roomNamesVersion++;
+      selfNicks.set(id, createNick.trim());
+      peerNicks.set(`${id}:self`, createNick.trim());
+      peerNicksVersion++;
+      navigate(`/r/${id}`);
+      createRoomName = "";
+      createNick = "";
+    } catch (e) {
+      createError = e instanceof Error ? e.message : String(e);
+    } finally {
+      creating = false;
+    }
+  }
+
+  async function updateRoomName() {
+    if (!channelId || !channelStore) return;
+    const name = roomNameDraft.trim();
+    if (!isValidRoomName(name)) {
+      keyError = "Room name 1-32 chars";
+      return;
+    }
+    try {
+      const k = roomKeys.get(channelId);
+      if (!k) throw new Error("no key");
+      const crypto = createAesGcmCrypto(k, channelId);
+      const wrapped = await wrapRoomName(crypto, name);
+      const ok = await channelStore.sendSetRoomName(wrapped);
+      if (!ok) throw new Error("not connected");
+      roomNames.set(channelId, name);
+      roomNamesVersion++;
+      editingRoomName = false;
+    } catch (e) {
+      keyError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function updateNick() {
+    if (!channelId || !channelStore) return;
+    const nick = nickDraft.trim();
+    if (!isValidNick(nick)) {
+      keyError = "Nick 1-20 chars";
+      return;
+    }
+    try {
+      const k = roomKeys.get(channelId);
+      if (!k) throw new Error("no key");
+      const crypto = createAesGcmCrypto(k, channelId);
+      const wrapped = await wrapNick(crypto, nick);
+      const ok = await channelStore.sendSetNickname(wrapped);
+      if (!ok) throw new Error("not connected");
+      selfNicks.set(channelId, nick);
+      // also update peerNicks for self for immediate display
+      peerNicks.set(`${channelId}:self`, nick);
+      peerNicksVersion++;
+      editingNick = false;
+    } catch (e) {
+      keyError = e instanceof Error ? e.message : String(e);
+    }
+  }
   async function joinRoom() {
     const { id, key } = parseInvite(joinInput);
-    // a 43-char base64url string satisfies the roomId pattern; reject it before it
-    // can be sent to the server as a channelId (key material must never leave the device)
     if (isRoomKeyB64(id)) {
       alert(
         "This looks like a room key, not an invite link. Paste the full invite link (/r/<id>#k=...) or open the room first and paste the key there."
@@ -209,8 +379,6 @@
       return;
     }
     const k = key ?? (keyInput.trim() || null);
-    // pre-import so an invalid key is rejected before navigating and the key
-    // travels via memory, never through the URL hash
     if (k) {
       try {
         roomKeys.set(id, await importRoomKey(k));
@@ -219,16 +387,72 @@
         return;
       }
       roomKeyB64.set(id, k);
+    } else if (!roomKeys.has(id)) {
+      // No key available — still go to nick gate, will prompt for key after
     }
-    navigate(`/r/${id}`);
+    // per-room nickname required — go to intercept page before actually joining
+    joinPendingId = id;
+    joinPendingKey = k ?? roomKeyB64.get(id) ?? null;
+    joinNick = selfNicks.get(id) ?? "";
+    joinError = null;
+    joinInput = "";
+    drawerOpen = false;
+    navigate("/join");
+  }
+
+  async function handleJoinConfirm() {
+    if (!joinPendingId) return;
+    const nick = joinNick.trim();
+    if (!isValidNick(nick)) {
+      joinError = "Nickname 1-20 chars, no newline (required)";
+      return;
+    }
+    joinCreating = true;
+    joinError = null;
+    try {
+      const id = joinPendingId!;
+      // ensure key is available (already set in joinRoom, or from pending)
+      if (!roomKeys.has(id) && joinPendingKey) {
+        roomKeys.set(id, await importRoomKey(joinPendingKey));
+        roomKeyB64.set(id, joinPendingKey);
+      }
+      if (!roomKeys.has(id)) throw new Error("missing room key — paste key from invite link");
+      selfNicks.set(id, nick);
+      peerNicks.set(`${id}:self`, nick);
+      peerNicksVersion++;
+      const pendingId = joinPendingId;
+      joinPendingId = null;
+      joinPendingKey = null;
+      joinNick = "";
+      navigate(`/r/${pendingId}`);
+    } catch (e) {
+      joinError = e instanceof Error ? e.message : String(e);
+    } finally {
+      joinCreating = false;
+    }
+  }
+
+  function cancelJoin() {
+    joinPendingId = null;
+    joinPendingKey = null;
+    joinNick = "";
+    joinError = null;
+    navigate("/");
   }
   function leaveRoom() {
     if (channelId) {
       roomKeys.delete(channelId);
       roomKeyB64.delete(channelId);
+      roomNames.delete(channelId);
+      selfNicks.delete(channelId);
+      // clean peer nicks for this room
+      for (const k of [...peerNicks.keys()]) if (k.startsWith(`${channelId}:`)) peerNicks.delete(k);
       roomHistory = roomHistory.filter((r) => r.id !== channelId);
     }
     keyInput = "";
+    editingRoomName = false;
+    editingNick = false;
+    drawerOpen = false;
     channelStore?.disconnect();
     navigate("/");
   }
@@ -339,18 +563,51 @@
 </script>
 
 <div class="flex h-screen bg-surface-subtle font-sans text-zinc-900 antialiased">
+  {#if drawerOpen}
+    <button class="fixed inset-0 z-20 bg-black/30 lg:hidden" aria-label="Close menu" onclick={() => (drawerOpen = false)}></button>
+  {/if}
+  <div class="fixed inset-y-0 left-0 z-30 w-64 transform bg-surface transition-transform lg:static lg:translate-x-0 {drawerOpen ? 'translate-x-0' : '-translate-x-full'}">
     <Sidebar
       rooms={sidebarRooms}
+      roomNames={roomNames}
       activeId={channelId}
       {creating}
       bind:joinInput
-      onCreate={createRoom}
+      onCreate={() => { drawerOpen = false; navigate('/create'); }}
       onJoin={joinRoom}
-      onNavigate={navigateToRoom}
+      onNavigate={(id) => { drawerOpen = false; navigateToRoom(id); }}
     />
+  </div>
 
   <main class="flex min-w-0 flex-1 flex-col bg-surface">
-    {#if path === "/"}
+    {#if path === "/create"}
+      <CreateRoomView
+        bind:roomName={createRoomName}
+        bind:nick={createNick}
+        {creating}
+        error={createError}
+        onCreate={handleCreateRoom}
+        onCancel={() => navigate("/")}
+      />
+    {:else if path === "/join"}
+      {#if joinPendingId}
+        <JoinNickView
+          roomNamePreview={roomNames.get(joinPendingId) ?? `Room: ${shortId(joinPendingId)}`}
+          bind:nick={joinNick}
+          creating={joinCreating}
+          error={joinError}
+          onConfirm={handleJoinConfirm}
+          onCancel={cancelJoin}
+        />
+      {:else}
+        <div class="flex flex-1 items-center justify-center p-8">
+          <div class="max-w-md text-center">
+            <p class="text-sm text-zinc-500">No pending join. Paste an invite link via Sidebar.</p>
+            <button class="mt-4 rounded-lg bg-brand px-4 py-2 text-sm text-white" onclick={() => navigate("/")}>Go home</button>
+          </div>
+        </div>
+      {/if}
+    {:else if path === "/"}
       <!-- Home: hero in main area -->
       <div class="flex flex-1 items-center justify-center p-8">
         <div class="max-w-md text-center">
@@ -378,6 +635,16 @@
       <div class="flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 px-5">
         <div class="flex items-center gap-3">
           <button
+            class="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-700 hover:bg-zinc-100 lg:hidden"
+            title="Open menu"
+            aria-label="Open menu"
+            onclick={() => (drawerOpen = true)}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+          <button
             class="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800"
             title="Leave room"
             aria-label="Leave room"
@@ -387,7 +654,22 @@
               <path d="M15 18l-6-6 6-6" />
             </svg>
           </button>
-          <span class="text-lg font-bold tracking-tight">Room: {shortId(channelId)}</span>
+          {#if editingRoomName}
+            <input
+              class="h-8 w-40 sm:w-56 rounded-lg border border-zinc-200 bg-surface px-2 text-sm outline-none focus:border-brand"
+              placeholder="Room name 1-32"
+              bind:value={roomNameDraft}
+              maxlength={32}
+              onkeydown={(e) => e.key === 'Enter' && updateRoomName()}
+            />
+            <button class="rounded-lg bg-brand px-2 py-1 text-xs text-white" onclick={updateRoomName}>Save</button>
+            <button class="rounded-lg bg-zinc-100 px-2 py-1 text-xs" onclick={() => (editingRoomName = false)}>Cancel</button>
+          {:else}
+            <span class="text-lg font-bold tracking-tight truncate max-w-[12rem] sm:max-w-xs" title={roomNames.get(channelId) ?? channelId}>{roomNames.get(channelId) ?? `Room: ${shortId(channelId)}`}</span>
+            {#if channelStore}
+              <button class="text-xs text-zinc-400 hover:text-zinc-600" title="Edit room name" onclick={() => { roomNameDraft = roomNames.get(channelId) ?? ""; editingRoomName = true; }}>✎</button>
+            {/if}
+          {/if}
           {#if channelStore}
             <span class="flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs text-zinc-600">
               <span
@@ -435,6 +717,25 @@
         </div>
       </div>
 
+      {#if channelStore}
+        <div class="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-5 py-2 text-xs">
+          {#if editingNick}
+            <input
+              class="h-7 rounded-lg border border-zinc-200 bg-surface px-2 text-xs outline-none focus:border-brand"
+              placeholder="Nickname 1-20"
+              bind:value={nickDraft}
+              maxlength={20}
+              onkeydown={(e) => e.key === 'Enter' && updateNick()}
+            />
+            <button class="rounded-lg bg-brand px-2 py-1 text-xs text-white" onclick={updateNick}>Save</button>
+            <button class="rounded-lg bg-zinc-100 px-2 py-1 text-xs" onclick={() => (editingNick = false)}>Cancel</button>
+          {:else}
+            <span class="text-zinc-600">You as <span class="font-medium text-zinc-900">{selfNicks.get(channelId) ?? "Anonymous"}</span></span>
+            <button class="text-zinc-400 hover:text-zinc-600" title="Edit nickname" onclick={() => { nickDraft = selfNicks.get(channelId) ?? ""; editingNick = true; }}>✎</button>
+          {/if}
+          <span class="ml-auto hidden sm:inline text-[11px] text-zinc-400">per-room · E2EE synced · tab memory</span>
+        </div>
+      {/if}
       {#if keyError}
         <div class="mx-5 mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-700">{keyError}</div>
       {/if}
@@ -467,42 +768,49 @@
         </div>
       {:else}
         <!-- Messages -->
-        <div bind:this={messagesEl} class="min-h-0 flex-1 overflow-y-auto px-5 py-6">
-          {#if channelStore.messages.length === 0}
-            <div class="flex gap-3">
-              <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-sm font-bold text-white">S</div>
-              <div>
-                <div class="mb-1 text-sm font-medium text-zinc-700">System</div>
-                <div class="inline-block rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-2.5 text-sm">
-                  🔒 您身处私密聊天室。消息采用端到端加密，仅限本聊天室的参与者查看，通过链接邀请他人加入。
-                </div>
-                <div class="mt-1 text-xs text-zinc-400">
-                  {channelStore.status} · {channelStore.online} online
-                  {#if channelStore.status === "reconnecting"}· reconnecting (up to 10s){/if}
+        <div bind:this={messagesEl} class="min-h-0 flex-1 overflow-y-auto bg-surface">
+          <div class="mx-auto w-full max-w-3xl px-5 py-6">
+            {#if channelStore.messages.length === 0}
+              <div class="flex gap-3">
+                <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-zinc-900 text-sm font-bold text-white">S</div>
+                <div>
+                  <div class="mb-1 text-sm font-medium text-zinc-700">System</div>
+                  <div class="inline-block max-w-[min(70%,36rem)] rounded-2xl rounded-tl-md bg-zinc-100 px-4 py-2.5 text-sm">
+                    🔒 您身处私密聊天室。消息采用端到端加密，仅限本聊天室的参与者查看，通过链接邀请他人加入。
+                  </div>
+                  <div class="mt-1 text-xs text-zinc-400">
+                    {channelStore.status} · {channelStore.online} online
+                    {#if channelStore.status === "reconnecting"}· reconnecting (up to 10s){/if}
+                  </div>
                 </div>
               </div>
-            </div>
-          {:else}
-            <MessageList
-              messages={channelStore.messages as ChatMessage[]}
-              onCopy={copyText}
-              onDelete={deleteMessage}
-            />
-          {/if}
+            {:else}
+              <MessageList
+                messages={channelStore.messages as ChatMessage[]}
+                peerNicks={peerNicks}
+                selfNicks={selfNicks}
+                roomId={channelId}
+                onCopy={copyText}
+                onDelete={deleteMessage}
+              />
+            {/if}
+          </div>
         </div>
 
         <!-- Composer -->
         <div class="shrink-0 border-t border-zinc-200">
-          <Composer
-            bind:input
-            disabled={!isCryptoAvailable()}
-            canSend={!!input.trim() && channelStore.status === "open"}
-            onSend={handleSend}
-            onClear={clearLocalMessages}
-          />
-          <p class="pb-2 text-center text-[11px] text-zinc-400">
-            E2EE · 12B IV + 16B messageId · AAD v1|channelId|messageId · key in memory only · server sees ciphertext
-          </p>
+          <div class="mx-auto w-full max-w-3xl">
+            <Composer
+              bind:input
+              disabled={!isCryptoAvailable()}
+              canSend={!!input.trim() && channelStore.status === "open"}
+              onSend={handleSend}
+              onClear={clearLocalMessages}
+            />
+            <p class="pb-2 text-center text-[11px] text-zinc-400">
+              E2EE · 12B IV + 16B messageId · AAD v1|channelId|messageId · key in memory only · server sees ciphertext
+            </p>
+          </div>
         </div>
       {/if}
     {:else}
