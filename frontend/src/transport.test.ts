@@ -1,55 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Transport } from "./transport.ts";
-
-// Minimal WebSocket mock
-class MockWS {
-  static instances: MockWS[] = [];
-  url: string;
-  readyState = 0; // CONNECTING
-  onopen: ((ev: Event) => void) | null = null;
-  onmessage: ((ev: MessageEvent) => void) | null = null;
-  onclose: ((ev: CloseEvent) => void) | null = null;
-  onerror: ((ev: Event) => void) | null = null;
-  sent: string[] = [];
-  constructor(url: string) {
-    this.url = url;
-    MockWS.instances.push(this);
-    // @ts-ignore
-    (globalThis as unknown as Record<string, unknown>).lastWS = this;
-  }
-  send(data: string) {
-    this.sent.push(data);
-  }
-  close() {
-    this.readyState = 3; // CLOSED
-    this.onclose?.(new CloseEvent("close"));
-  }
-  // helpers to simulate
-  simulateOpen() {
-    this.readyState = 1; // OPEN
-    this.onopen?.(new Event("open"));
-  }
-  simulateMessage(data: string) {
-    this.onmessage?.(new MessageEvent("message", { data }));
-  }
-}
+import { MockWS, installMockWS } from "./test-helpers/mockws.ts";
 
 describe("Transport", () => {
-  let origWS: typeof WebSocket;
+  let restoreWS: () => void;
 
   beforeEach(() => {
-    origWS = globalThis.WebSocket as unknown as typeof WebSocket;
-    // @ts-ignore
-    globalThis.WebSocket = MockWS as unknown as typeof WebSocket;
-    // define constants
-    (globalThis.WebSocket as unknown as Record<string, number>).CONNECTING = 0;
-    (globalThis.WebSocket as unknown as Record<string, number>).OPEN = 1;
-    (globalThis.WebSocket as unknown as Record<string, number>).CLOSED = 3;
-    MockWS.instances = [];
+    restoreWS = installMockWS();
   });
 
   afterEach(() => {
-    globalThis.WebSocket = origWS;
+    restoreWS();
   });
 
   it("connects and changes status", () => {
