@@ -150,8 +150,9 @@
     const id = channelId;
     const hk = pendingHashKey;
     void keyInput;
-    void roomNamesVersion;
-    void peerNicksVersion;
+    // NOTE: intentionally NOT dependent on roomNamesVersion/peerNicksVersion —
+    // display-name echoes must not rebuild the WS connection (a rebuild sends
+    // leave_channel and can self-destruct a solo room)
     if (!id) {
       channelStore?.disconnect();
       channelStore = null;
