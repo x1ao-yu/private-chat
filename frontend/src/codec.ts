@@ -8,22 +8,28 @@ import type {
   LeaveChannel,
   SendMessage,
   KeyUpdate,
+  SetRoomName,
+  SetNickname,
   ChannelCreated,
   Joined,
   Left,
   BroadcastMessage,
   KeyUpdated,
+  RoomNameUpdated,
+  NicknameUpdated,
   OnlineCount,
   Error as ProtocolError,
 } from "./protocol.gen.ts";
 
-export type ClientMessage = CreateChannel | JoinChannel | LeaveChannel | SendMessage | KeyUpdate;
+export type ClientMessage = CreateChannel | JoinChannel | LeaveChannel | SendMessage | KeyUpdate | SetRoomName | SetNickname;
 export type ServerMessage =
   | ChannelCreated
   | Joined
   | Left
   | BroadcastMessage
   | KeyUpdated
+  | RoomNameUpdated
+  | NicknameUpdated
   | OnlineCount
   | ProtocolError;
 export type AnyMessage = ChatProtocol;
@@ -34,6 +40,8 @@ const CLIENT_TYPES = new Set([
   "leave_channel",
   "send_message",
   "key_update",
+  "set_room_name",
+  "set_nickname",
 ]);
 const SERVER_TYPES = new Set([
   "channel_created",
@@ -41,6 +49,8 @@ const SERVER_TYPES = new Set([
   "left",
   "message",
   "key_updated",
+  "room_name_updated",
+  "nickname_updated",
   "online_count",
   "error",
 ]);
@@ -90,6 +100,14 @@ export function encode(msg: AnyMessage): string {
       assertChannelId((msg as KeyUpdate).channelId);
       assertPayload((msg as KeyUpdate).payload);
       break;
+    case "set_room_name":
+      assertChannelId((msg as SetRoomName).channelId);
+      assertPayload((msg as SetRoomName).payload);
+      break;
+    case "set_nickname":
+      assertChannelId((msg as SetNickname).channelId);
+      assertPayload((msg as SetNickname).payload);
+      break;
     case "joined":
       assertChannelId((msg as Joined).channelId);
       if (typeof (msg as Joined).online !== "number" || (msg as Joined).online < 1) {
@@ -107,6 +125,20 @@ export function encode(msg: AnyMessage): string {
       assertChannelId((msg as KeyUpdated).channelId);
       assertPayload((msg as KeyUpdated).payload);
       if (typeof (msg as KeyUpdated).from !== "string" || (msg as KeyUpdated).from.length === 0) {
+        throw new Error("invalid from");
+      }
+      break;
+    case "room_name_updated":
+      assertChannelId((msg as RoomNameUpdated).channelId);
+      assertPayload((msg as RoomNameUpdated).payload);
+      if (typeof (msg as RoomNameUpdated).from !== "string" || (msg as RoomNameUpdated).from.length === 0) {
+        throw new Error("invalid from");
+      }
+      break;
+    case "nickname_updated":
+      assertChannelId((msg as NicknameUpdated).channelId);
+      assertPayload((msg as NicknameUpdated).payload);
+      if (typeof (msg as NicknameUpdated).from !== "string" || (msg as NicknameUpdated).from.length === 0) {
         throw new Error("invalid from");
       }
       break;
@@ -169,6 +201,18 @@ export function decode(raw: string): AnyMessage {
       assertChannelId(parsed.channelId);
       assertPayload(parsed.payload);
       return parsed as unknown as KeyUpdate;
+    case "set_room_name":
+      if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
+      if (typeof parsed.payload !== "string") throw new Error("missing payload");
+      assertChannelId(parsed.channelId);
+      assertPayload(parsed.payload);
+      return parsed as unknown as SetRoomName;
+    case "set_nickname":
+      if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
+      if (typeof parsed.payload !== "string") throw new Error("missing payload");
+      assertChannelId(parsed.channelId);
+      assertPayload(parsed.payload);
+      return parsed as unknown as SetNickname;
     case "channel_created":
       if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
       assertChannelId(parsed.channelId);
@@ -190,6 +234,16 @@ export function decode(raw: string): AnyMessage {
       if (typeof parsed.payload !== "string") throw new Error("missing payload");
       if (typeof parsed.from !== "string") throw new Error("missing from");
       return parsed as unknown as KeyUpdated;
+    case "room_name_updated":
+      if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
+      if (typeof parsed.payload !== "string") throw new Error("missing payload");
+      if (typeof parsed.from !== "string") throw new Error("missing from");
+      return parsed as unknown as RoomNameUpdated;
+    case "nickname_updated":
+      if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
+      if (typeof parsed.payload !== "string") throw new Error("missing payload");
+      if (typeof parsed.from !== "string") throw new Error("missing from");
+      return parsed as unknown as NicknameUpdated;
     case "online_count":
       if (typeof parsed.channelId !== "string") throw new Error("missing channelId");
       if (typeof parsed.count !== "number") throw new Error("missing count");

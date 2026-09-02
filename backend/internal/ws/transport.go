@@ -243,6 +243,88 @@ func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
 				_ = conn.Write(cCtx, websocket.MessageText, b)
 				cancel()
 			}
+		case *protocol.SetRoomName:
+			ip := clientIP(r)
+			connKey := fmt.Sprintf("%p:send", c)
+			if !s.limiter.Allow(connKey, 10, time.Second) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
+			if !s.limiter.Allow(ip+":sendIP", 30, time.Second) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
+			if !s.Manager.Exists(v.ChannelId) {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			}
+			if snap := s.Manager.Snapshot(v.ChannelId); snap == nil {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			} else if _, ok := snap[c]; !ok {
+				_ = writeError(ctx, c, "channel_not_found", "not a member")
+				continue
+			}
+			s.Manager.Touch(v.ChannelId)
+			snapshot := s.Manager.Snapshot(v.ChannelId)
+			for conn := range snapshot {
+				isSelf := conn == c
+				bcast := protocol.RoomNameUpdated{
+					Type:      protocol.RoomNameUpdatedTypeRoomNameUpdated,
+					ChannelId: v.ChannelId,
+					Payload:   v.Payload,
+					From:      clientID,
+					Self:      &isSelf,
+				}
+				b, err := Encode(bcast)
+				if err != nil {
+					continue
+				}
+				cCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = conn.Write(cCtx, websocket.MessageText, b)
+				cancel()
+			}
+		case *protocol.SetNickname:
+			ip := clientIP(r)
+			connKey2 := fmt.Sprintf("%p:send", c)
+			if !s.limiter.Allow(connKey2, 10, time.Second) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
+			if !s.limiter.Allow(ip+":sendIP", 30, time.Second) {
+				_ = writeError(ctx, c, "rate_limited", "too many requests")
+				continue
+			}
+			if !s.Manager.Exists(v.ChannelId) {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			}
+			if snap := s.Manager.Snapshot(v.ChannelId); snap == nil {
+				_ = writeError(ctx, c, "channel_not_found", "channel not found")
+				continue
+			} else if _, ok := snap[c]; !ok {
+				_ = writeError(ctx, c, "channel_not_found", "not a member")
+				continue
+			}
+			s.Manager.Touch(v.ChannelId)
+			snapshot := s.Manager.Snapshot(v.ChannelId)
+			for conn := range snapshot {
+				isSelf := conn == c
+				bcast := protocol.NicknameUpdated{
+					Type:      protocol.NicknameUpdatedTypeNicknameUpdated,
+					ChannelId: v.ChannelId,
+					Payload:   v.Payload,
+					From:      clientID,
+					Self:      &isSelf,
+				}
+				b, err := Encode(bcast)
+				if err != nil {
+					continue
+				}
+				cCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = conn.Write(cCtx, websocket.MessageText, b)
+				cancel()
+			}
 		default:
 			_ = writeError(ctx, c, "invalid_message", "unsupported message type")
 		}

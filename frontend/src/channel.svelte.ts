@@ -8,6 +8,8 @@ import {
   extractMessageIdB64,
   ReplayCache,
   unwrapNewKey,
+  unwrapRoomName,
+  unwrapNick,
   createAesGcmCrypto,
   importRoomKey,
 } from "./e2ee.ts";
@@ -81,6 +83,8 @@ export type ChatMessage = BroadcastMessage & { ts: number };
 
 export type ChannelStoreOptions = {
   onKeyRotated?: (newKeyB64: string, newCrypto: Crypto) => void;
+  onRoomNameUpdated?: (name: string, from: string) => void;
+  onNicknameUpdated?: (from: string, nick: string) => void;
 };
 
 export class ChannelStore {
@@ -95,12 +99,17 @@ export class ChannelStore {
   private unsubMessage: (() => void) | null = null;
   private unsubStatus: (() => void) | null = null;
   private replayCache = new ReplayCache(1000);
+  private lastRoomName: string | null = null;
   private onKeyRotated?: (newKeyB64: string, newCrypto: Crypto) => void;
+  private onRoomNameUpdated?: (name: string, from: string) => void;
+  private onNicknameUpdated?: (from: string, nick: string) => void;
 
   constructor(channelId: string, crypto: Crypto = noopCrypto, opts: ChannelStoreOptions = {}) {
     this.channelId = channelId;
     this.crypto = crypto;
     this.onKeyRotated = opts.onKeyRotated;
+    this.onRoomNameUpdated = opts.onRoomNameUpdated;
+    this.onNicknameUpdated = opts.onNicknameUpdated;
     this.transport = new Transport(getWsUrl());
 
     this.unsubStatus = this.transport.onStatus((s) => {
@@ -176,6 +185,57 @@ export class ChannelStore {
             this.error = null;
           } catch {
             this.error = "key rotation failed (decrypt/import)";
+          }
+          break;
+        }
+        case "room_name_updated": {
+          if (!isValidEnvelope(msg.payload)) {
+            this.error = "invalid room_name envelope";
+            break;
+          }
+          const mid = extractMessageIdB64(msg.payload);
+          if (mid && this.replayCache.has(mid)) {
+            this.error = "replay dropped (room_name)";
+            break;
+          }
+          try {
+            const name = await unwrapRoomName(this.crypto, msg.payload);
+            if (mid) this.replayCache.add(mid);
+            // dedup system reminder: same name don't spam
+            if (this.lastRoomName !== null && this.lastRoomName === name) {
+              this.onRoomNameUpdated?.(name, msg.from);
+              break;
+            }
+            this.lastRoomName = name;
+            this.onRoomNameUpdated?.(name, msg.from);
+            const ts = Date.now();
+            this.messages = [
+              ...this.messages,
+              { channelId: msg.channelId, payload: `🏷️ Room name updated to "${name}" by ${msg.from}`, from: "system", self: false, ts } as unknown as ChatMessage,
+            ];
+            this.error = null;
+          } catch {
+            this.error = "room_name update failed";
+          }
+          break;
+        }
+        case "nickname_updated": {
+          if (!isValidEnvelope(msg.payload)) {
+            this.error = "invalid nick envelope";
+            break;
+          }
+          const mid = extractMessageIdB64(msg.payload);
+          if (mid && this.replayCache.has(mid)) {
+            this.error = "replay dropped (nick)";
+            break;
+          }
+          try {
+            const nick = await unwrapNick(this.crypto, msg.payload);
+            if (mid) this.replayCache.add(mid);
+            this.onNicknameUpdated?.(msg.from, nick);
+            this.error = null;
+          } catch {
+            this.error = "nickname update failed";
           }
           break;
         }
@@ -261,6 +321,36 @@ export class ChannelStore {
   async sendKeyUpdate(wrappedPayload: string): Promise<boolean> {
     try {
       const raw = encode({ type: "key_update", channelId: this.channelId, payload: wrappedPayload });
+      const ok = this.transport.sendRaw(raw);
+      if (!ok) {
+        this.error = "not connected (queued)";
+        return false;
+      }
+      return true;
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  }
+
+  async sendSetRoomName(wrappedPayload: string): Promise<boolean> {
+    try {
+      const raw = encode({ type: "set_room_name", channelId: this.channelId, payload: wrappedPayload });
+      const ok = this.transport.sendRaw(raw);
+      if (!ok) {
+        this.error = "not connected (queued)";
+        return false;
+      }
+      return true;
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  }
+
+  async sendSetNickname(wrappedPayload: string): Promise<boolean> {
+    try {
+      const raw = encode({ type: "set_nickname", channelId: this.channelId, payload: wrappedPayload });
       const ok = this.transport.sendRaw(raw);
       if (!ok) {
         this.error = "not connected (queued)";

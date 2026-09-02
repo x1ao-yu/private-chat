@@ -204,3 +204,57 @@ export async function unwrapNewKey(crypto: Crypto, payload: string): Promise<str
   if (typeof k !== "string" || !isRoomKeyB64(k)) throw new Error("invalid wrapped key");
   return k;
 }
+
+// Display name helpers (per-room, E2EE sync, protocol fields t/v/name/nick)
+export function isValidRoomName(s: string): boolean {
+  const t = s.trim();
+  return t.length >= 1 && t.length <= 32 && !t.includes("\n");
+}
+export function isValidNick(s: string): boolean {
+  const t = s.trim();
+  return t.length >= 1 && t.length <= 20 && !t.includes("\n");
+}
+
+export async function wrapRoomName(crypto: Crypto, name: string): Promise<string> {
+  const n = name.trim();
+  if (!isValidRoomName(n)) throw new Error("invalid room name (1-32 chars, no newline)");
+  const plain = JSON.stringify({ t: "room_name", v: 1, name: n });
+  return crypto.encrypt(plain);
+}
+export async function unwrapRoomName(crypto: Crypto, payload: string): Promise<string> {
+  const plain = await crypto.decrypt(payload);
+  let obj: unknown;
+  try {
+    obj = JSON.parse(plain);
+  } catch {
+    throw new Error("invalid room_name payload");
+  }
+  if (!obj || typeof obj !== "object") throw new Error("invalid room_name payload");
+  const o = obj as { t?: unknown; v?: unknown; name?: unknown };
+  if (o.t !== "room_name" || o.v !== 1 || typeof o.name !== "string" || !isValidRoomName(o.name)) {
+    throw new Error("invalid room_name fields");
+  }
+  return o.name.trim();
+}
+
+export async function wrapNick(crypto: Crypto, nick: string): Promise<string> {
+  const n = nick.trim();
+  if (!isValidNick(n)) throw new Error("invalid nick (1-20 chars, no newline)");
+  const plain = JSON.stringify({ t: "nick", v: 1, nick: n });
+  return crypto.encrypt(plain);
+}
+export async function unwrapNick(crypto: Crypto, payload: string): Promise<string> {
+  const plain = await crypto.decrypt(payload);
+  let obj: unknown;
+  try {
+    obj = JSON.parse(plain);
+  } catch {
+    throw new Error("invalid nick payload");
+  }
+  if (!obj || typeof obj !== "object") throw new Error("invalid nick payload");
+  const o = obj as { t?: unknown; v?: unknown; nick?: unknown };
+  if (o.t !== "nick" || o.v !== 1 || typeof o.nick !== "string" || !isValidNick(o.nick)) {
+    throw new Error("invalid nick fields");
+  }
+  return o.nick.trim();
+}
