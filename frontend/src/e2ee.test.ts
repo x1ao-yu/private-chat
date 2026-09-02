@@ -321,7 +321,13 @@ describe("room name wrap/unwrap", () => {
     const crypto = createAesGcmCrypto(await generateRoomKey(), "room-name1");
     const wrapped = await wrapRoomName(crypto, "  My Room  ");
     expect(isValidEnvelope(wrapped)).toBe(true);
-    await expect(unwrapRoomName(crypto, wrapped)).resolves.toBe("My Room");
+    await expect(unwrapRoomName(crypto, wrapped)).resolves.toEqual({ name: "My Room", initial: false });
+  });
+
+  it("round-trips initial flag for re-announcements", async () => {
+    const crypto = createAesGcmCrypto(await generateRoomKey(), "room-name-init");
+    const wrapped = await wrapRoomName(crypto, "My Room", { initial: true });
+    await expect(unwrapRoomName(crypto, wrapped)).resolves.toEqual({ name: "My Room", initial: true });
   });
 
   it("isValidRoomName boundaries", () => {

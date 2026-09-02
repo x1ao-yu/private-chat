@@ -206,7 +206,7 @@ export class ChannelStore {
             break;
           }
           try {
-            const name = await unwrapRoomName(this.crypto, msg.payload);
+            const { name, initial } = await unwrapRoomName(this.crypto, msg.payload);
             if (mid) this.replayCache.add(mid);
             // dedup system reminder: same name don't spam
             if (this.lastRoomName !== null && this.lastRoomName === name) {
@@ -215,11 +215,15 @@ export class ChannelStore {
             }
             this.lastRoomName = name;
             this.onRoomNameUpdated?.(name, msg.from);
-            const ts = Date.now();
-            this.messages = [
-              ...this.messages,
-              { channelId: msg.channelId, payload: name, from: "system", self: false, ts, sys: { sysKind: "room_name", actor: msg.from } } as ChatMessage,
-            ];
+            // re-announcements (peer-join sync / reconnect catch-up) apply the
+            // name silently; only genuine renames get a timeline entry
+            if (!initial) {
+              const ts = Date.now();
+              this.messages = [
+                ...this.messages,
+                { channelId: msg.channelId, payload: name, from: "system", self: false, ts, sys: { sysKind: "room_name", actor: msg.from } } as ChatMessage,
+              ];
+            }
             this.error = null;
           } catch {
             this.error = "room_name update failed";

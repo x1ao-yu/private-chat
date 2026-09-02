@@ -221,6 +221,26 @@ describe("ChannelStore", () => {
     store.disconnect();
   });
 
+  it("applies initial (re-announcement) room name silently", async () => {
+    const crypto = await makeCrypto();
+    const onRoomNameUpdated = vi.fn();
+    const { store, ws } = await openStore(CH, crypto, { onRoomNameUpdated });
+
+    // peer-join sync frame: name must be applied without a timeline entry
+    ws.simulateMessage(updatedFrame("room_name_updated", CH, await wrapRoomName(crypto, "Synced Name", { initial: true }), "peer-namer"));
+    await tick();
+    expect(onRoomNameUpdated).toHaveBeenCalledWith("Synced Name", "peer-namer");
+    expect(store.messages).toHaveLength(0);
+    expect(store.error).toBeNull();
+
+    // a later genuine rename still produces the system message
+    ws.simulateMessage(updatedFrame("room_name_updated", CH, await wrapRoomName(crypto, "Renamed"), "peer-namer"));
+    await tick();
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0].payload).toBe("Renamed");
+    store.disconnect();
+  });
+
   it("handles nickname_updated callback without touching the timeline", async () => {
     const crypto = await makeCrypto();
     const onNicknameUpdated = vi.fn();

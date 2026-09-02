@@ -215,13 +215,13 @@ export function isValidNick(s: string): boolean {
   return t.length >= 1 && t.length <= 20 && !t.includes("\n");
 }
 
-export async function wrapRoomName(crypto: Crypto, name: string): Promise<string> {
+export async function wrapRoomName(crypto: Crypto, name: string, opts?: { initial?: boolean }): Promise<string> {
   const n = name.trim();
   if (!isValidRoomName(n)) throw new Error("invalid room name (1-32 chars, no newline)");
-  const plain = JSON.stringify({ t: "room_name", v: 1, name: n });
+  const plain = JSON.stringify({ t: "room_name", v: 1, name: n, ...(opts?.initial ? { initial: true } : {}) });
   return crypto.encrypt(plain);
 }
-export async function unwrapRoomName(crypto: Crypto, payload: string): Promise<string> {
+export async function unwrapRoomName(crypto: Crypto, payload: string): Promise<{ name: string; initial: boolean }> {
   const plain = await crypto.decrypt(payload);
   let obj: unknown;
   try {
@@ -230,11 +230,11 @@ export async function unwrapRoomName(crypto: Crypto, payload: string): Promise<s
     throw new Error("invalid room_name payload");
   }
   if (!obj || typeof obj !== "object") throw new Error("invalid room_name payload");
-  const o = obj as { t?: unknown; v?: unknown; name?: unknown };
+  const o = obj as { t?: unknown; v?: unknown; name?: unknown; initial?: unknown };
   if (o.t !== "room_name" || o.v !== 1 || typeof o.name !== "string" || !isValidRoomName(o.name)) {
     throw new Error("invalid room_name fields");
   }
-  return o.name.trim();
+  return { name: o.name.trim(), initial: o.initial === true };
 }
 
 export async function wrapNick(crypto: Crypto, nick: string): Promise<string> {

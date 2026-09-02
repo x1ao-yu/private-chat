@@ -266,7 +266,7 @@
       const k2 = roomKeys.get(id);
       if (k2) {
         lastBroadcastRoomName = rname;
-        wrapRoomName(createAesGcmCrypto(k2, id), rname).then(w => channelStore?.sendSetRoomName(w)).catch(()=>{ lastBroadcastRoomName = null; });
+        wrapRoomName(createAesGcmCrypto(k2, id), rname, { initial: true }).then(w => channelStore?.sendSetRoomName(w)).catch(()=>{ lastBroadcastRoomName = null; });
       }
     }
   });
