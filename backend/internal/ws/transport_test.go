@@ -432,12 +432,12 @@ func TestInvalidMessage(t *testing.T) {
 	defer cancel()
 	c, _, err := websocket.Dial(ctx, url, nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("dial: %v", err)
 	}
 	defer c.Close(websocket.StatusNormalClosure, "")
 
 	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"unknown"}`)); err != nil {
-		t.Fatal(err)
+		t.Fatalf("write: %v", err)
 	}
 	_, data, err := c.Read(ctx)
 	if err != nil {
@@ -449,5 +449,168 @@ func TestInvalidMessage(t *testing.T) {
 	}
 	if e.Code != protocol.ErrorCodeInvalidMessage {
 		t.Fatalf("expected invalid_message code got %v", e.Code)
+	}
+}
+
+// createAndJoinTwo creates a channel and joins it from two connections.
+// All join handshakes are drained so callers read only post-join traffic.
+func createAndJoinTwo(t *testing.T, url string) (context.Context, *websocket.Conn, *websocket.Conn, string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	c1, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial c1: %v", err)
+	}
+	t.Cleanup(func() { c1.Close(websocket.StatusNormalClosure, "") })
+	c2, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial c2: %v", err)
+	}
+	t.Cleanup(func() { c2.Close(websocket.StatusNormalClosure, "") })
+
+	if err := c1.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+		t.Fatalf("write create: %v", err)
+	}
+	_, data, err := c1.Read(ctx)
+	if err != nil {
+		t.Fatalf("read channel_created: %v", err)
+	}
+	var cc protocol.ChannelCreated
+	_ = json.Unmarshal(data, &cc)
+	chID := cc.ChannelId
+
+	if err := writeJSON(ctx, c1, map[string]string{"type": "join_channel", "channelId": chID}); err != nil {
+		t.Fatalf("write join1: %v", err)
+	}
+	_, _, _ = c1.Read(ctx) // joined 1
+	_, _, _ = c1.Read(ctx) // online_count 1
+
+	if err := writeJSON(ctx, c2, map[string]string{"type": "join_channel", "channelId": chID}); err != nil {
+		t.Fatalf("write join2: %v", err)
+	}
+	_, _, _ = c2.Read(ctx) // joined 2
+	_, _, _ = c2.Read(ctx) // online_count 2 (broadcast)
+	_, _, _ = c1.Read(ctx) // online_count 2 (broadcast)
+	return ctx, c1, c2, chID
+}
+
+func writeJSON(ctx context.Context, c *websocket.Conn, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return c.Write(ctx, websocket.MessageText, b)
+}
+
+// relayFrame mirrors the wire shape of key_updated/room_name_updated/nickname_updated.
+type relayFrame struct {
+	Type      string `json:"type"`
+	ChannelId string `json:"channelId"`
+	Payload   string `json:"payload"`
+	From      string `json:"from"`
+	Self      *bool  `json:"self"`
+}
+
+// assertRelayed reads one broadcast frame on each connection and checks verbatim
+// relay with per-recipient self flag (true for the sender, false for the other).
+func assertRelayed(t *testing.T, ctx context.Context, wantType, chID, payload string, sender, other *websocket.Conn) {
+	t.Helper()
+	for i, c := range []*websocket.Conn{sender, other} {
+		_, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("%s conn %d read: %v", wantType, i, err)
+		}
+		var m relayFrame
+		if err := json.Unmarshal(data, &m); err != nil {
+			t.Fatalf("%s conn %d unmarshal: %v", wantType, i, err)
+		}
+		if m.Type != wantType || m.ChannelId != chID || m.Payload != payload {
+			t.Fatalf("%s conn %d unexpected relay: %+v", wantType, i, m)
+		}
+		if m.From == "" {
+			t.Fatalf("%s conn %d missing from", wantType, i)
+		}
+		wantSelf := i == 0
+		if m.Self == nil || *m.Self != wantSelf {
+			t.Fatalf("%s conn %d expected self=%v got %v", wantType, i, wantSelf, m.Self)
+		}
+	}
+}
+
+func TestKeyUpdateRelay(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, c1, c2, chID := createAndJoinTwo(t, url)
+
+	payload := "AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBB.CCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	if err := writeJSON(ctx, c1, map[string]string{"type": "key_update", "channelId": chID, "payload": payload}); err != nil {
+		t.Fatalf("write key_update: %v", err)
+	}
+	assertRelayed(t, ctx, "key_updated", chID, payload, c1, c2)
+}
+
+func TestSetRoomNameAndNicknameRelay(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, c1, c2, chID := createAndJoinTwo(t, url)
+
+	cases := []struct{ sendType, wantType string }{
+		{"set_room_name", "room_name_updated"},
+		{"set_nickname", "nickname_updated"},
+	}
+	for _, tc := range cases {
+		payload := "DDDDDDDDDDDDDDDDDDDDDD.EEEEEEEEEEEEEEEEEEEEEE.FFFFFFFFFFFFFFFFFFFFFFFFFFFF"
+		if err := writeJSON(ctx, c1, map[string]string{"type": tc.sendType, "channelId": chID, "payload": payload}); err != nil {
+			t.Fatalf("write %s: %v", tc.sendType, err)
+		}
+		assertRelayed(t, ctx, tc.wantType, chID, payload, c1, c2)
+	}
+}
+
+func TestKeyUpdateWithoutJoin(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c1, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial c1: %v", err)
+	}
+	defer c1.Close(websocket.StatusNormalClosure, "")
+	c2, _, err := websocket.Dial(ctx, url, nil)
+	if err != nil {
+		t.Fatalf("dial c2: %v", err)
+	}
+	defer c2.Close(websocket.StatusNormalClosure, "")
+
+	// c1 creates channel and joins so it exists
+	if err := c1.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+		t.Fatalf("write create: %v", err)
+	}
+	_, data, _ := c1.Read(ctx)
+	var cc protocol.ChannelCreated
+	_ = json.Unmarshal(data, &cc)
+	chID := cc.ChannelId
+	if err := writeJSON(ctx, c1, map[string]string{"type": "join_channel", "channelId": chID}); err != nil {
+		t.Fatalf("write join1: %v", err)
+	}
+	_, _, _ = c1.Read(ctx) // joined
+	_, _, _ = c1.Read(ctx) // online_count
+
+	// c2 sends key_update without joining
+	if err := writeJSON(ctx, c2, map[string]string{"type": "key_update", "channelId": chID, "payload": "x.y.z"}); err != nil {
+		t.Fatalf("write key_update: %v", err)
+	}
+	_, data, err = c2.Read(ctx)
+	if err != nil {
+		t.Fatalf("read error: %v", err)
+	}
+	var e protocol.Error
+	if err := json.Unmarshal(data, &e); err != nil {
+		t.Fatalf("error unmarshal: %v", err)
+	}
+	if e.Code != protocol.ErrorCodeChannelNotFound {
+		t.Fatalf("expected channel_not_found for key_update without join, got %v", e.Code)
 	}
 }
