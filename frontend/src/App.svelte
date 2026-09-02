@@ -106,6 +106,14 @@
     return channelId ? [active, ...others] : others;
   });
 
+  // header room name must be reactive to late room_name broadcasts (joiner side),
+  // hence the version read — the plain Map alone is not tracked
+  let currentRoomName = $derived.by(() => {
+    void roomNamesVersion;
+    return roomNames.get(channelId) ?? null;
+  });
+  let headerRoomLabel = $derived(currentRoomName ?? `Room: ${shortId(channelId)}`);
+
   function shortId(id: string): string {
     return id.length > 6 ? id.slice(0, 6) : id;
   }
@@ -646,7 +654,7 @@
             <button class="rounded-lg bg-brand px-2 py-1 text-xs text-white" onclick={updateRoomName}>Save</button>
             <button class="rounded-lg bg-zinc-100 px-2 py-1 text-xs" onclick={() => (editingRoomName = false)}>Cancel</button>
           {:else}
-            <span class="text-lg font-bold tracking-tight truncate max-w-[12rem] sm:max-w-xs" title={roomNames.get(channelId) ?? channelId}>{roomNames.get(channelId) ?? `Room: ${shortId(channelId)}`}</span>
+            <span class="text-lg font-bold tracking-tight truncate max-w-[12rem] sm:max-w-xs" title={currentRoomName ?? channelId}>{headerRoomLabel}</span>
             {#if channelStore}
               <button class="text-xs text-zinc-400 hover:text-zinc-600" title="Edit room name" onclick={() => { roomNameDraft = roomNames.get(channelId) ?? ""; editingRoomName = true; }}>✎</button>
             {/if}
