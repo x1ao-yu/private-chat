@@ -32,7 +32,7 @@
   }
 </script>
 
-<aside class="flex w-64 shrink-0 flex-col border-r border-zinc-200 bg-surface">
+<aside class="flex h-full w-64 shrink-0 flex-col border-r border-zinc-200 bg-surface">
   <!-- Brand -->
   <div class="flex items-center gap-3 border-b border-zinc-200 p-4">
     <div class="flex h-9 w-9 items-center justify-center rounded-lg bg-brand text-white">
