@@ -1,6 +1,6 @@
-# Private Chat — P5 安全加固
+# Private Chat — P6 匿名身份
 
-轻量级、基于浏览器的端到端加密（E2EE）私密聊天。P5 新增重放保护、消息完整性、E2EE 封装 `key_update`/`key_updated` 密钥轮换、协作式成员移除、硬化限流、XSS/CSP 审查。P4 隐私、P3 房间密钥、P2 E2EE、P1 最小聊天与 P0 基础已完成。
+轻量级、基于浏览器的端到端加密（E2EE）私密聊天。P6 新增会话身份：每标签页一对 Ed25519 密钥（仅内存保存）、签名聊天消息与昵称声明、接收端逐条验签 + 每房间 TOFU 固定 + 昵称冲突警告。P5 安全加固（重放保护、消息完整性、密钥轮换、协作式移除、限流、XSS/CSP 审查）、P4 隐私、P3 房间密钥、P2 E2EE、P1 最小聊天与 P0 基础已完成。
 
 ## 核心原则
 
@@ -22,9 +22,10 @@ frontend/src/
   transport.ts      # 仅负责 WebSocket 生命周期与重连
   codec.ts          # 通过 protocol.gen.ts 编解码（含 key_update/key_updated）
   e2ee.ts           # AES-GCM-256，12B IV + 16B messageId + AAD v1|channelId|messageId + ReplayCache + wrapNewKey
+  identity.ts       # P6 会话身份：Ed25519 密钥对、指纹、签名消息/昵称的封装与验签
   invite.ts         # 邀请链接 / hash 密钥解析（纯函数，P3）
-  channel.svelte.ts # UI 状态（Svelte runes），重放去重 + key_updated 处理
-  App.svelte        # 路由 / 和 /r/:id，内存密钥 + Rotate & share / Rotate locally
+  channel.svelte.ts # UI 状态（Svelte runes），重放去重 + key_updated 处理 + 身份验签（TOFU）
+  App.svelte        # 路由 / 和 /r/:id，内存密钥 + 会话身份 + Rotate & share / Rotate locally
   protocol.gen.ts   # 自动生成，请勿手动编辑
 
 backend/
@@ -81,15 +82,18 @@ docker compose up --build  # 前端 :80，后端 :8080
 客户端 → 服务端：`create_channel`、`join_channel`、`leave_channel`、`send_message`、`key_update`（E2EE 封装新钥）
 服务端 → 客户端：`channel_created`、`joined`、`left`、`message`、`key_updated`、`online_count`、`error`
 
-`message.from` 是临时的连接 ID（`peer-` + 每个 WebSocket 连接 4 字节随机数，重连时重新生成，见 `backend/internal/ws/transport.go:210`）——**不是**稳定的身份标识（P6）。不持久化任何历史记录（仅中继，见 `backend/internal/channel/manager.go:11`）；重新加入不会重放历史消息。最小限度的 `rate_limited` 限流（`create 5次/分钟 每个IP+每个连接`，`send 10次/秒 每个连接`）。
+`message.from` 是临时的连接 ID（`peer-` + 每个 WebSocket 连接 4 字节随机数，重连时重新生成，见 `backend/internal/ws/transport.go:210`）——**不是**稳定的身份标识。自 P6 起，发送者归属由加密载荷内的 Ed25519 会话身份提供。不持久化任何历史记录（仅中继，见 `backend/internal/channel/manager.go:11`）；重新加入不会重放历史消息。最小限度的 `rate_limited` 限流（`create 5次/分钟 每个IP+每个连接`，`send 10次/秒 每个连接`）。
 
 `payload` 现为**密文**，格式为 `base64url(iv).base64url(messageId).base64url(ct+tag)`，其中 `12B IV` 永不重用（每条消息通过 `getRandomValues` 生成）、每条消息对应 `16B messageId`，`AAD = v1|channelId|messageId` 用于绑定房间/版本/消息。房间密钥（P3）按房间隔离，通过 Web Crypto 使用 `AES-GCM-256`，仅存于标签页内存（不可导出的 `CryptoKey` + 仅用于重组邀请链接的内存副本），永不发送到服务端。密钥仅经由邀请链接 hash `/r/{id}#k=` 传输一次，导入后立即从 URL 剥离；SPA 导航不携带密钥。导入时执行严格的 43 字符 base64url 校验；粘贴到 Join 框的裸密钥会在发起任何网络请求前被拒绝。按设计无持久化：刷新即丢钥，重新加入需重新粘贴。详见 `frontend/src/e2ee.ts:1`、`frontend/src/invite.ts:1` 与 `protocol/schema.json:61`。
+
+**P6 身份完全位于加密载荷内部**（服务端与协议零改动）：聊天消息明文内层升级为 JSON `{t:"msg",v:1,text,nick,pk,sig}`，昵称更新为 `{t:"nick",v:1,nick,pk,sig}`。消息签名覆盖 `identity-v1|channelId|messageIdB64|nick|text`；昵称声明签名覆盖 `identity-v1|nick|channelId|nick`。接收端逐条验签（每房间 TOFU 固定，标签页内存），签名无效则隐藏内容，同一昵称被不同指纹声明天琥珀色冲突警告。旧版未签名明文仍可正常渲染。详见 `frontend/src/identity.ts:1` 与 SECURITY.md "P6 Notes"（边界：仅 TOFU、假名而非匿名、按设计仅限本会话）。
 
 ## 安全说明
 
 - **端到端加密**：`AES-GCM-256`，`12B IV` 永不重用，每条消息 `16B messageId`，`AAD v1|channelId|messageId` 绑定，房间密钥为每房间 `32B` 通过 `crypto.getRandomValues` 生成，仅存于标签页内存；P5 复用同一信封 `wrapNewKey`/`unwrapNewKey` 轮换。
 - **隐私增强（P4）**：无明文持久化 —— 服务端仅中继（`backend/internal/channel/manager.go:24`），内存 `map[channelId]*channelInfo` 单实例（重启丢状态），房间过期空房 10m / 闲置 24h 通过 1m 轮询 `ExpireNow()`（`backend/cmd/server/main.go:21`），安全日志仅 `listening` + `expired N channels`，元数据最小化。
-- **重放/完整性（P5）**：每房间 `ReplayCache` LRU 1000 对 `messageIdB64` 去重（`frontend/src/e2ee.ts:51`、`frontend/src/channel.svelte.ts:106`），`isValidEnvelope` 预校验 12B iv/16B mid/≥16B ct；GCM tag+AAD 保 outsider 完整性，insider 伪造需 P6 身份；XSS 载荷经 `MessageList.svelte:34,56` 文本插值安全。
+- **重放/完整性（P5）**：每房间 `ReplayCache` LRU 1000 对 `messageIdB64` 去重（`frontend/src/e2ee.ts:51`、`frontend/src/channel.svelte.ts:106`），`isValidEnvelope` 预校验 12B iv/16B mid/≥16B ct；GCM tag+AAD 保 outsider 完整性；XSS 载荷经 `MessageList.svelte` 文本插值安全。
+- **会话身份（P6）**：每标签页一对 Ed25519 密钥，仅内存保存、永不持久化、全部房间共用；聊天消息与昵称更新在 E2EE 载荷内携带 `{pk,sig}`，接收端逐条验签 + 每房间 TOFU 固定（`frontend/src/identity.ts:1`、`frontend/src/channel.svelte.ts`）；签名无效隐藏内容（`⚠️ invalid signature`），同昵称不同指纹标记为冲突；头像颜色改用稳定的身份指纹。边界：仅 TOFU、无 PKI/带外验证；是假名而非匿名（同一标签页跨房间同钥）；未签名的旧版声明仍可伪造——详见 SECURITY.md "P6 Notes"。
 - **密钥轮换/成员移除（P5）**：`key_update` → `key_updated` E2EE 封装广播（`protocol/schema.json:66`、`backend/internal/ws/transport.go:210`、`frontend/src/e2ee.ts:170`）服务端只转发；协作式剔除 = `Rotate locally` 本地轮换不广播。
 - 服务端永不记录明文；服务端仅原样中继 `payload`，只能看到密文（已通过 `e2ee.test.ts` 验证）。
 - `protocol/schema.json` 校验在两端强制执行
@@ -99,4 +103,4 @@ docker compose up --build  # 前端 :80，后端 :8080
 
 ## 路线图
 
-P0 基础已完成，P1 最小化聊天已完成，P2 端到端加密已完成，P3 房间密钥已完成，P4 隐私已完成，P5 安全已完成 —— 详见 `ROADMAP.md`。下一步为 P6 匿名身份（身份密钥、展示身份、验证）。
+P0 基础已完成，P1 最小化聊天已完成，P2 端到端加密已完成，P3 房间密钥已完成，P4 隐私已完成，P5 安全已完成，P6 匿名身份已完成 —— 详见 `ROADMAP.md`。下一步为 P7 高级 E2EE（群组密钥管理、前向保密、后妥协安全）。

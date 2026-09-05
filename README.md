@@ -1,6 +1,6 @@
-# Private Chat — P5 Security
+# Private Chat — P6 Anonymous Identity
 
-Lightweight browser-based E2EE private chat. P5 adds replay protection, message integrity, key rotation via E2EE-wrapped `key_update`/`key_updated`, cooperative member removal, hardened rate limits, XSS/CSP review. P4 privacy, P3 room keys, P2 E2EE, P1 minimal chat and P0 foundation already done.
+Lightweight browser-based E2EE private chat. P6 adds a session identity: an Ed25519 keypair per tab (memory only), signed chat messages and nickname claims, receive-side signature verification with per-room TOFU pinning and nick-conflict warnings. P5 security (replay protection, integrity, key rotation, cooperative removal, rate limits, XSS/CSP), P4 privacy, P3 room keys, P2 E2EE, P1 minimal chat and P0 foundation already done.
 
 ## Principles
 
@@ -22,9 +22,10 @@ frontend/src/
   transport.ts      # WebSocket lifecycle only + reconnect
   codec.ts          # encode/decode via protocol.gen.ts (incl. key_update/key_updated)
   e2ee.ts           # AES-GCM-256, 12B IV + 16B messageId + AAD v1|channelId|messageId + ReplayCache + wrapNewKey
+  identity.ts       # P6 session identity: Ed25519 keypair, fingerprints, signed message/nick wrap+verify
   invite.ts         # invite-link / hash-key parsing (pure functions, P3)
-  channel.svelte.ts # UI state (Svelte runes), replay dedup + key_updated handling
-  App.svelte        # routes / and /r/:id, in-memory keys + Rotate & share / Rotate locally
+  channel.svelte.ts # UI state (Svelte runes), replay dedup + key_updated handling + identity verify (TOFU)
+  App.svelte        # routes / and /r/:id, in-memory keys + session identity + Rotate & share / Rotate locally
   protocol.gen.ts   # generated, do not edit
 
 backend/
@@ -81,15 +82,18 @@ docker compose up --build  # frontend :80, backend :8080
 Client → Server: `create_channel`, `join_channel`, `leave_channel`, `send_message`, `key_update` (E2EE-wrapped new key)
 Server → Client: `channel_created`, `joined`, `left`, `message`, `key_updated`, `online_count`, `error`
 
-`message.from` is an ephemeral connection ID (`peer-` + 4B random per WebSocket, regenerated on reconnect, `backend/internal/ws/transport.go:210`) — **not** a stable identity (P6). No history is persisted (relay-only, `backend/internal/channel/manager.go:11`); rejoin does not replay. Minimal `rate_limited` (`create 5/min per-IP+per-conn`, `send 10/s per-conn`).
+`message.from` is an ephemeral connection ID (`peer-` + 4B random per WebSocket, regenerated on reconnect, `backend/internal/ws/transport.go:210`) — **not** a stable identity. Since P6, sender attribution comes from the Ed25519 session identity inside the encrypted payload. No history is persisted (relay-only, `backend/internal/channel/manager.go:11`); rejoin does not replay. Minimal `rate_limited` (`create 5/min per-IP+per-conn`, `send 10/s per-conn`).
 
 `payload` is now **ciphertext** `base64url(iv).base64url(messageId).base64url(ct+tag)` with `12B IV` never reused (`getRandomValues` per message) and `16B messageId` per message, `AAD = v1|channelId|messageId` binding room/version/message. Room key (P3) is per-room, `AES-GCM-256` via Web Crypto, held in tab memory only (non-extractable `CryptoKey` + an in-memory copy used solely to rebuild invite links), never sent to server. It travels only inside the invite-link hash `/r/{id}#k=`, which is stripped from the URL as soon as it is imported; SPA navigation never carries it. Import validates strict 43-char base64url; a bare key pasted into Join is rejected before any network request. No persistence by design: a refresh drops the key, rejoining requires re-pasting. See `frontend/src/e2ee.ts:1`, `frontend/src/invite.ts:1` and `protocol/schema.json:61`.
+
+**P6 identity rides inside the encrypted payload** (zero server/protocol changes): the inner plaintext of chat messages is now JSON `{t:"msg",v:1,text,nick,pk,sig}` and nickname updates `{t:"nick",v:1,nick,pk,sig}`. Messages sign `identity-v1|channelId|messageIdB64|nick|text`; nick claims sign `identity-v1|nick|channelId|nick`. Receivers verify per message (TOFU pinning per room, tab memory), hide content on invalid signatures, and flag the same nick claimed by a different fingerprint. Legacy unsigned plaintexts still render. See `frontend/src/identity.ts:1` and SECURITY.md "P6 Notes" for the exact boundaries (TOFU only, pseudonymity not anonymity, session-scoped by design).
 
 ## Security Notes
 
 - **E2EE**: `AES-GCM-256` with `12B IV` never reused, `16B messageId` per message, `AAD v1|channelId|messageId` binding, room key `32B` `crypto.getRandomValues` per room, tab-memory only, not permanent; key travels once via invite hash `#k=` and is stripped after import, never sent to server; strict 43-char base64url validation on import. **P5**: `wrapNewKey`/`unwrapNewKey` reuses E2EE envelope to rotate.
 - **Privacy (P4)**: no plaintext persistence — server relay-only (`backend/internal/channel/manager.go:24`), in-memory `map[channelId]*channelInfo` single-instance (restart drops state), room expiration empty 10m / idle 24h via 1m sweep `ExpireNow()` (`backend/cmd/server/main.go:21`), safe logging only `listening` + `expired N channels` (no payload/peer-id, `channelId` allowed but not logged by default), metadata minimal (channelId, ephemeral peer-id per conn, online count, IP fixed-window 60s).
-- **Replay/Integrity (P5)**: per-channel `ReplayCache` LRU 1000 on `messageIdB64` (`frontend/src/e2ee.ts:51`, `frontend/src/channel.svelte.ts:106`) drops duplicates, `isValidEnvelope` pre-validates 12B iv/16B mid/≥16B ct; GCM tag + AAD ensures outsider integrity, insider forge still possible (needs P6 identity); `MessageList.svelte:34,56` text interpolation safe (no `{@html}`), `XSS` payload stays plaintext.
+- **Replay/Integrity (P5)**: per-channel `ReplayCache` LRU 1000 on `messageIdB64` (`frontend/src/e2ee.ts:51`, `frontend/src/channel.svelte.ts:106`) drops duplicates, `isValidEnvelope` pre-validates 12B iv/16B mid/≥16B ct; GCM tag + AAD ensures outsider integrity, `MessageList.svelte` text interpolation safe (no `{@html}`), `XSS` payload stays plaintext.
+- **Session identity (P6)**: Ed25519 keypair per tab, memory only, never persisted, shared across rooms; chat messages and nick updates carry `{pk,sig}` inside the E2EE payload, verified per message against per-room TOFU pinning (`frontend/src/identity.ts:1`, `frontend/src/channel.svelte.ts`); invalid signatures hide content (`⚠️ invalid signature`), same-nick/different-fingerprint is flagged as a conflict; avatar colors use the stable identity fingerprint. Boundaries: TOFU only, no PKI/out-of-band verification; pseudonymity not anonymity (same tab = same key across rooms); unsigned legacy claims remain spoofable — see SECURITY.md "P6 Notes".
 - **Key rotation / Member removal (P5)**: `key_update` → `key_updated` E2EE-wrapped broadcast (`protocol/schema.json:66`, `backend/internal/ws/transport.go:210`, `frontend/src/e2ee.ts:170`) server only relays; cooperative eviction = `Rotate locally` without broadcast, old members lose key.
 - Plaintext never logged server-side; server relays `payload` verbatim and sees ciphertext only (verified via `e2ee.test.ts`).
 - `protocol/schema.json` validation enforced both sides (go-jsonschema UnmarshalJSON + TS codec)
@@ -100,4 +104,4 @@ Server → Client: `channel_created`, `joined`, `left`, `message`, `key_updated`
 
 ## Roadmap
 
-P0 Foundation done, P1 Minimal Chat done, P2 E2EE done, P3 Room Keys done, P4 Privacy done, P5 Security done — see `ROADMAP.md`. Next is P6 Anonymous Identity (identity key, display identity, verification).
+P0 Foundation done, P1 Minimal Chat done, P2 E2EE done, P3 Room Keys done, P4 Privacy done, P5 Security done, P6 Anonymous Identity done — see `ROADMAP.md`. Next is P7 Advanced E2EE (group key management, forward secrecy, post-compromise security).

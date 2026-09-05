@@ -51,9 +51,9 @@
 
 ## P6 — Anonymous Identity
 
-* [ ] Identity key
-* [ ] Anonymous display identity
-* [ ] Identity verification
+* [x] Identity key
+* [x] Anonymous display identity
+* [x] Identity verification
 
 ## P7 — Advanced E2EE
 
@@ -80,4 +80,4 @@
 
 ## Current
 
-**P6**
+**P7**
