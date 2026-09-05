@@ -137,6 +137,13 @@
   });
   let headerRoomLabel = $derived(currentRoomName ?? `Room: ${shortId(channelId)}`);
 
+  // join-gate room-name preview must be reactive to the pre-join peek below —
+  // the plain Map alone is not tracked, hence the version read
+  let joinRoomPreview = $derived.by(() => {
+    void roomNamesVersion;
+    return joinPendingId ? roomNames.get(joinPendingId) ?? null : null;
+  });
+
   function shortId(id: string): string {
     return id.length > 6 ? id.slice(0, 6) : id;
   }
@@ -229,6 +236,59 @@
       }
     })();
     // no teardown: stores persist across room switches until "Leave room"
+  });
+
+  // Pre-join room-name peek: the display name is E2EE-synced, so a joiner at
+  // the nickname gate cannot know it yet. While the gate is open and we hold
+  // the invite key, open a short-lived throwaway connection, join, capture the
+  // re-announced room name (members re-announce on every online increase),
+  // then disconnect. Falls back to "Room: <id>" for keyless gates and empty
+  // rooms (nobody to re-announce). The peek never touches the real store.
+  let peekStore: ChannelStore | null = null;
+  let peekTimer: ReturnType<typeof setTimeout> | null = null;
+  function stopRoomNamePeek() {
+    if (peekTimer) {
+      clearTimeout(peekTimer);
+      peekTimer = null;
+    }
+    if (peekStore) {
+      peekStore.disconnect();
+      peekStore = null;
+    }
+  }
+  $effect(() => {
+    const id = joinPendingId;
+    const key = joinPendingKey;
+    if (!id || !key || roomNames.has(id)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const k = await importRoomKey(key);
+        if (cancelled || joinPendingId !== id) return;
+        const s = new ChannelStore(id, createAesGcmCrypto(k, id), {
+          identity: false, // peek only — no per-room identity needed
+          onRoomNameUpdated: (name) => {
+            if (cancelled || joinPendingId !== id || roomNames.has(id)) return;
+            roomNames.set(id, name);
+            roomNamesVersion++;
+            stopRoomNamePeek(); // got what we came for
+          },
+        });
+        if (cancelled) {
+          s.disconnect();
+          return;
+        }
+        peekStore = s;
+        s.connect();
+        peekTimer = setTimeout(() => stopRoomNamePeek(), 3000);
+      } catch {
+        // malformed key — the gate still works, preview falls back to the id
+      }
+    })();
+    return () => {
+      cancelled = true;
+      stopRoomNamePeek();
+    };
   });
 
   $effect(() => {
@@ -603,7 +663,7 @@
     {:else if path === "/join"}
       {#if joinPendingId}
         <JoinNickView
-          roomNamePreview={roomNames.get(joinPendingId) ?? `Room: ${shortId(joinPendingId)}`}
+          roomNamePreview={joinRoomPreview ?? `Room: ${shortId(joinPendingId)}`}
           bind:nick={joinNick}
           creating={joinCreating}
           error={joinError}
