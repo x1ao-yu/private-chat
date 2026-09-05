@@ -13,8 +13,8 @@ import {
   type Crypto,
 } from "./e2ee.ts";
 
-// flush pending microtasks (decrypt/unwrap are async)
-const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+// flush pending async work (decrypt/unwrap chains span several task turns)
+const tick = () => new Promise<void>((r) => setTimeout(r, 25));
 
 const CH = "room-test-1";
 
@@ -313,5 +313,43 @@ describe("ChannelStore", () => {
     expect(ws.closed).toBe(true);
     expect(await store.sendMessage("after close")).toBe(false);
     expect(store.error).toBeTruthy();
+  });
+
+  it("two stores operate independently (multi-room)", async () => {
+    const cryptoA = createAesGcmCrypto(await importRoomKeyRaw(crypto.getRandomValues(new Uint8Array(32))), "room-a");
+    const cryptoB = createAesGcmCrypto(await importRoomKeyRaw(crypto.getRandomValues(new Uint8Array(32))), "room-b");
+    const sA = new ChannelStore("room-a", cryptoA);
+    const sB = new ChannelStore("room-b", cryptoB);
+    sA.connect();
+    sB.connect();
+    const wsA = MockWS.instances[0];
+    const wsB = MockWS.instances[1];
+    wsA.simulateOpen();
+    wsB.simulateOpen();
+    // each store joins its own room
+    expect(JSON.parse(wsA.sent[0]).channelId).toBe("room-a");
+    expect(JSON.parse(wsB.sent[0]).channelId).toBe("room-b");
+    // traffic for B does not touch A
+    wsB.simulateMessage(msgFrame("room-b", await cryptoB.encrypt("for b only")));
+    await tick();
+    expect(sB.messages).toHaveLength(1);
+    expect(sB.messages[0].payload).toBe("for b only");
+    expect(sA.messages).toHaveLength(0);
+    expect(sA.error).toBeNull();
+    // key rotation in A leaves B's crypto alone
+    const newKeyA = await exportRoomKey(await generateRoomKey());
+    wsA.simulateMessage(updatedFrame("key_updated", "room-a", await wrapNewKey(cryptoA, newKeyA), "peer-a"));
+    await tick();
+    expect(sA.error).toBeNull();
+    expect(sB.error).toBeNull();
+    // outbound frames carry their own channelId
+    expect(await sA.sendMessage("from a")).toBe(true);
+    expect(await sB.sendMessage("from b")).toBe(true);
+    const frameA = JSON.parse(wsA.sent[wsA.sent.length - 1]);
+    const frameB = JSON.parse(wsB.sent[wsB.sent.length - 1]);
+    expect(frameA.channelId).toBe("room-a");
+    expect(frameB.channelId).toBe("room-b");
+    sA.disconnect();
+    sB.disconnect();
   });
 });

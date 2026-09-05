@@ -19,11 +19,15 @@
     isValidNick,
   } from "./e2ee.ts";
   import { parseInvite, parseKeyFromHash } from "./invite.ts";
+  import { SvelteMap } from "svelte/reactivity";
 
   let path = $state(window.location.pathname);
   // key parsed from the current URL hash; must be $state so hash changes are seen after mount
   let pendingHashKey = $state(parseKeyFromHash(window.location.hash));
-  let channelStore: ChannelStore | null = $state(null);
+  // multi-room: one store (and one WebSocket) per joined room, all connected
+  // at the same time; `channelStore` (below, derived) is the ACTIVE room's
+  // store — switching rooms only changes the view, never the connections
+  const stores = new SvelteMap<string, ChannelStore>();
   let input = $state("");
   let joinInput = $state("");
   let creating = $state(false);
@@ -79,33 +83,34 @@
     path.startsWith("/r/") ? path.slice(3).split("/")[0].split("?")[0].split("#")[0] : ""
   );
 
-  // keep sidebar history in sync with active room state
+  // the active room's store; null when the room has no key/store yet
+  let channelStore = $derived(stores.get(channelId) ?? null);
+
+  // remember visited rooms that have no store yet (e.g. keyless, paste-key
+  // panel) so they stay visible in the sidebar; rooms with a store are listed
+  // live instead
   $effect(() => {
     const id = channelId;
-    if (!id) return;
-    const online = channelStore?.online ?? 0;
-    const connected = channelStore?.status === "open";
-    const existing = roomHistory.find((r) => r.id === id);
-    if (existing) {
-      existing.online = online;
-      existing.connected = connected;
-    } else {
-      roomHistory = [...roomHistory, { id, online, connected }];
+    if (!id || stores.has(id)) return;
+    if (!roomHistory.some((r) => r.id === id)) {
+      roomHistory = [...roomHistory, { id, online: 0, connected: false }];
     }
   });
 
   let sidebarRooms = $derived.by<RoomEntry[]>(() => {
     void roomNamesVersion;
     void peerNicksVersion;
-    const active: RoomEntry = {
-      id: channelId,
-      online: channelStore?.online ?? 0,
-      connected: channelStore?.status === "open",
-    };
-    const others = roomHistory
-      .filter((r) => r.id !== channelId)
-      .map((r) => ({ ...r, connected: false }));
-    return channelId ? [active, ...others] : others;
+    const list: RoomEntry[] = [];
+    // live entries for every connected room (multi-room: background rooms stay online)
+    for (const [id, s] of stores) {
+      list.push({ id, online: s.online, connected: s.status === "open" });
+    }
+    for (const r of roomHistory) {
+      if (!stores.has(r.id)) list.push({ id: r.id, online: r.online, connected: false });
+    }
+    // active room first
+    list.sort((a, b) => (a.id === channelId ? -1 : b.id === channelId ? 1 : 0));
+    return list;
   });
 
   // header room name must be reactive to late room_name broadcasts (joiner side),
@@ -161,13 +166,8 @@
     const hk = pendingHashKey;
     void keyInput;
     // NOTE: intentionally NOT dependent on roomNamesVersion/peerNicksVersion —
-    // display-name echoes must not rebuild the WS connection (a rebuild sends
-    // leave_channel and can self-destruct a solo room)
-    if (!id) {
-      channelStore?.disconnect();
-      channelStore = null;
-      return;
-    }
+    // display-name echoes must not touch connections
+    if (!id) return; // stores stay connected on the home page (multi-room)
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return;
     // Joiner nickname gate: per-room nick required, explicit confirm
     if (id && !selfNicks.has(id) && path.startsWith("/r/")) {
@@ -178,13 +178,13 @@
       queueMicrotask(() => navigate("/join"));
       return;
     }
-    let cancelled = false;
-    let store: ChannelStore | null = null;
+    // already connected — switching rooms is just a view switch
+    if (stores.has(id)) return;
     (async () => {
       try {
         if (!isCryptoAvailable()) throw new Error("E2EE requires HTTPS or localhost");
         const crypto = await getCryptoForChannel(id, hk);
-        if (cancelled) return;
+        if (stores.has(id)) return; // a racing effect run already created it
         const s = new ChannelStore(id, crypto, {
           onKeyRotated: (newKeyB64) => {
             roomKeyB64.set(id, newKeyB64);
@@ -202,35 +202,14 @@
             if (from === "self") selfNicks.set(id, nick);
           },
         });
-        store = s;
-        channelStore = s;
+        stores.set(id, s);
         s.connect();
-        // after connect, broadcast our nick if we have one for this room (per-room) — dedup via lastBroadcastNick to avoid double with online-effect
-        const selfNick = selfNicks.get(id);
-        if (selfNick && isValidNick(selfNick) && selfNick !== lastBroadcastNick) {
-          lastBroadcastNick = selfNick;
-          setTimeout(async () => {
-            try {
-              const k = roomKeys.get(id);
-              if (!k) return;
-              const c = createAesGcmCrypto(k, id);
-              const wrapped = await wrapNick(c, selfNick);
-              await s.sendSetNickname(wrapped);
-            } catch { lastBroadcastNick = null; }
-          }, 500);
-        }
         keyError = null;
       } catch (e) {
         keyError = e instanceof Error ? e.message : String(e);
-        channelStore?.disconnect();
-        channelStore = null;
       }
     })();
-    return () => {
-      cancelled = true;
-      store?.disconnect();
-      if (channelStore === store) channelStore = null;
-    };
+    // no teardown: stores persist across room switches until "Leave room"
   });
 
   $effect(() => {
@@ -239,34 +218,36 @@
     }
   });
 
-  // re-broadcast display names when peers join (so new members learn existing names) — plain var to avoid $effect loop
-  let lastOnlineForSync = 0;
-  let lastBroadcastNick: string | null = null;
-  let lastBroadcastRoomName: string | null = null;
+  // re-broadcast display names when peers join, per room (so new members learn
+  // existing names) — plain Maps keyed by roomId, outside reactivity
+  const lastOnlineByRoom = new Map<string, number>();
+  const lastBroadcastNickByRoom = new Map<string, string | null>();
+  const lastBroadcastRoomNameByRoom = new Map<string, string | null>();
   $effect(() => {
-    const online = channelStore?.online ?? 0;
-    const id = channelId;
-    if (!id || !channelStore) { lastOnlineForSync = online; return; }
-    if (online <= lastOnlineForSync) { lastOnlineForSync = online; return; }
-    lastOnlineForSync = online;
-    // a newly joined member cannot know our names (and neither can a fresh
-    // reconnect) — re-announce despite lastBroadcast* dedup
-    lastBroadcastNick = null;
-    lastBroadcastRoomName = null;
-    const nick = selfNicks.get(id);
-    if (nick && isValidNick(nick) && nick !== lastBroadcastNick) {
-      const k = roomKeys.get(id);
-      if (k) {
-        lastBroadcastNick = nick;
-        wrapNick(createAesGcmCrypto(k, id), nick).then(w => channelStore?.sendSetNickname(w)).catch(()=>{ lastBroadcastNick = null; });
+    for (const [id, s] of stores) {
+      const online = s.online;
+      const last = lastOnlineByRoom.get(id) ?? 0;
+      if (online <= last) { lastOnlineByRoom.set(id, online); continue; }
+      lastOnlineByRoom.set(id, online);
+      // a newly joined member cannot know our names (and neither can a fresh
+      // reconnect) — re-announce despite broadcast dedup
+      lastBroadcastNickByRoom.set(id, null);
+      lastBroadcastRoomNameByRoom.set(id, null);
+      const nick = selfNicks.get(id);
+      if (nick && isValidNick(nick)) {
+        const k = roomKeys.get(id);
+        if (k) {
+          lastBroadcastNickByRoom.set(id, nick);
+          wrapNick(createAesGcmCrypto(k, id), nick).then(w => stores.get(id)?.sendSetNickname(w)).catch(()=>{ lastBroadcastNickByRoom.set(id, null); });
+        }
       }
-    }
-    const rname = roomNames.get(id);
-    if (rname && isValidRoomName(rname) && rname !== lastBroadcastRoomName) {
-      const k2 = roomKeys.get(id);
-      if (k2) {
-        lastBroadcastRoomName = rname;
-        wrapRoomName(createAesGcmCrypto(k2, id), rname, { initial: true }).then(w => channelStore?.sendSetRoomName(w)).catch(()=>{ lastBroadcastRoomName = null; });
+      const rname = roomNames.get(id);
+      if (rname && isValidRoomName(rname)) {
+        const k2 = roomKeys.get(id);
+        if (k2) {
+          lastBroadcastRoomNameByRoom.set(id, rname);
+          wrapRoomName(createAesGcmCrypto(k2, id), rname, { initial: true }).then(w => stores.get(id)?.sendSetRoomName(w)).catch(()=>{ lastBroadcastRoomNameByRoom.set(id, null); });
+        }
       }
     }
   });
@@ -432,6 +413,12 @@
   }
   function leaveRoom() {
     if (channelId) {
+      const s = stores.get(channelId);
+      s?.disconnect();
+      stores.delete(channelId);
+      lastOnlineByRoom.delete(channelId);
+      lastBroadcastNickByRoom.delete(channelId);
+      lastBroadcastRoomNameByRoom.delete(channelId);
       roomKeys.delete(channelId);
       roomKeyB64.delete(channelId);
       roomNames.delete(channelId);
@@ -444,7 +431,6 @@
     editingRoomName = false;
     editingNick = false;
     drawerOpen = false;
-    channelStore?.disconnect();
     navigate("/");
   }
   async function importPastedKey() {
@@ -456,6 +442,8 @@
       if (!channelId) throw new Error("no channel");
       roomKeys.set(channelId, k);
       roomKeyB64.set(channelId, b64);
+      // hot-swap crypto if this room is already connected
+      stores.get(channelId)?.updateCrypto(createAesGcmCrypto(k, channelId));
       // clear a stale/invalid hash key (if any) so the effect re-run resolves via roomKeys
       pendingHashKey = null;
       history.replaceState({}, "", location.pathname);
