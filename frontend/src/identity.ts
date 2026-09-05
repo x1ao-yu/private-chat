@@ -10,6 +10,7 @@ import {
   isRoomKeyB64,
   base64UrlEncode,
   base64UrlDecode,
+  type Crypto,
 } from "./e2ee.ts";
 
 export interface Identity {
@@ -173,12 +174,21 @@ export function nickSigData(channelId: string, nick: string): string {
   return `${IDENTITY_VERSION}|nick|${channelId}|${nick}`;
 }
 
-/** Inner plaintext for a signed nickname update; the caller encrypts it with the room key. */
-export async function wrapSignedNick(identity: Identity, channelId: string, nick: string): Promise<string> {
+/**
+ * Build a signed nickname update and encrypt it with the room key — returns a
+ * ready-to-send E2EE envelope (same contract as wrapNick). The signature only
+ * covers the inner JSON; the room crypto encrypts the whole thing.
+ */
+export async function wrapSignedNick(
+  identity: Identity,
+  crypto: Crypto,
+  channelId: string,
+  nick: string,
+): Promise<string> {
   const n = nick.trim();
   if (!isValidNick(n)) throw new Error("invalid nick (1-20 chars, no newline)");
   const sig = await signIdentity(identity.privateKey, nickSigData(channelId, n));
-  return JSON.stringify({ t: "nick", v: 1, nick: n, pk: identity.pubB64, sig });
+  return crypto.encrypt(JSON.stringify({ t: "nick", v: 1, nick: n, pk: identity.pubB64, sig }));
 }
 
 export async function verifySignedNick(

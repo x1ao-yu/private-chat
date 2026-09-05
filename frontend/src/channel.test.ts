@@ -8,6 +8,7 @@ import {
   importRoomKey,
   importRoomKeyRaw,
   newMessageIdB64,
+  noopCrypto,
   wrapNewKey,
   wrapNick,
   wrapRoomName,
@@ -495,15 +496,15 @@ describe("identity: signed messages (P6)", () => {
     const onNicknameUpdated = vi.fn();
     const { store, ws } = await openStore(CH, crypto, { onNicknameUpdated });
 
-    const good = await wrapSignedNick(peer, CH, "carol");
-    ws.simulateMessage(updatedFrame("nickname_updated", CH, await crypto.encrypt(good), "peer-n1"));
+    const good = await wrapSignedNick(peer, crypto, CH, "carol");
+    ws.simulateMessage(updatedFrame("nickname_updated", CH, good, "peer-n1"));
     await tick();
     expect(onNicknameUpdated).toHaveBeenCalledWith("peer-n1", "carol");
     expect(store.error).toBeNull();
 
     // signed by a real key but the nick was swapped after signing -> forgery dropped
     const evil = await generateIdentity();
-    const inner = JSON.parse(await wrapSignedNick(evil, CH, "mallory")) as Record<string, unknown>;
+    const inner = JSON.parse(await wrapSignedNick(evil, noopCrypto, CH, "mallory")) as Record<string, unknown>;
     inner.nick = "carol"; // signature was computed over "mallory"
     ws.simulateMessage(updatedFrame("nickname_updated", CH, await crypto.encrypt(JSON.stringify(inner)), "peer-n2"));
     await tick();

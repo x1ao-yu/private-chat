@@ -15,7 +15,7 @@ import {
   verifySignedNick,
   type Identity,
 } from "./identity.ts";
-import { isValidNick } from "./e2ee.ts";
+import { isValidNick, noopCrypto, createAesGcmCrypto, generateRoomKey, isValidEnvelope } from "./e2ee.ts";
 
 const CH = "room-test-1";
 const MID = "AAAAAAAAAAAAAAAAAAAAAA"; // 16 bytes as base64url (22 chars)
@@ -124,9 +124,9 @@ describe("signed message wrap/parse (P6)", () => {
 });
 
 describe("signed nick wrap/verify (P6)", () => {
-  it("wraps and verifies a signed nick update", async () => {
+  it("wraps and verifies a signed nick update (noop crypto returns the inner JSON)", async () => {
     const id = await makeIdentity();
-    const inner = await wrapSignedNick(id, CH, "alice");
+    const inner = await wrapSignedNick(id, noopCrypto, CH, "alice");
     const obj = JSON.parse(inner) as { t: string; v: number; nick: string; pk: string; sig: string };
     expect(obj.t).toBe("nick");
     expect(obj.v).toBe(1);
@@ -137,18 +137,29 @@ describe("signed nick wrap/verify (P6)", () => {
 
   it("binds the nick signature to the room", async () => {
     const id = await makeIdentity();
-    const inner = await wrapSignedNick(id, CH, "alice");
+    const inner = await wrapSignedNick(id, noopCrypto, CH, "alice");
     const obj = JSON.parse(inner) as { nick: string; pk: string; sig: string };
     await expect(verifySignedNick("other-room", obj.nick, obj.pk, obj.sig)).resolves.toBe(false);
   });
 
   it("rejects invalid nicks", async () => {
     const id = await makeIdentity();
-    await expect(wrapSignedNick(id, CH, "  ")).rejects.toThrow(/invalid nick/);
-    await expect(wrapSignedNick(id, CH, "a\nb")).rejects.toThrow(/invalid nick/);
+    await expect(wrapSignedNick(id, noopCrypto, CH, "  ")).rejects.toThrow(/invalid nick/);
+    await expect(wrapSignedNick(id, noopCrypto, CH, "a\nb")).rejects.toThrow(/invalid nick/);
   });
 
   it("nickSigData is versioned and room-bound", () => {
     expect(nickSigData(CH, "alice")).toBe(`identity-v1|nick|${CH}|alice`);
+  });
+
+  it("returns an encrypted envelope, never plaintext (regression: nick leak)", async () => {
+    const id = await makeIdentity();
+    const crypto = createAesGcmCrypto(await generateRoomKey(), CH);
+    const wrapped = await wrapSignedNick(id, crypto, CH, "alice");
+    // the payload on the wire must be a valid E2EE envelope, not raw JSON
+    expect(isValidEnvelope(wrapped)).toBe(true);
+    expect(wrapped.startsWith("{")).toBe(false);
+    const plain = await crypto.decrypt(wrapped);
+    expect((JSON.parse(plain) as { t: string }).t).toBe("nick");
   });
 });

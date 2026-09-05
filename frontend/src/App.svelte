@@ -260,7 +260,7 @@
           // P6: prefer a signed nick claim when this room's identity is ready
           // (join is gated on identity, so it always is by the time online rises)
           const wrappedNick = s.identity
-            ? wrapSignedNick(s.identity, id, nick)
+            ? wrapSignedNick(s.identity, createAesGcmCrypto(k, id), id, nick)
             : wrapNick(createAesGcmCrypto(k, id), nick);
           wrappedNick.then(w => stores.get(id)?.sendSetNickname(w)).catch(()=>{ lastBroadcastNickByRoom.set(id, null); });
         }
@@ -350,7 +350,7 @@
       const k = roomKeys.get(channelId);
       if (!k) throw new Error("no key");
       const wrapped = channelStore.identity
-        ? await wrapSignedNick(channelStore.identity, channelId, nick)
+        ? await wrapSignedNick(channelStore.identity, createAesGcmCrypto(k, channelId), channelId, nick)
         : await wrapNick(createAesGcmCrypto(k, channelId), nick);
       const ok = await channelStore.sendSetNickname(wrapped);
       if (!ok) throw new Error("not connected");
