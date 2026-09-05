@@ -15,6 +15,7 @@ import {
 
 export interface Identity {
   publicKey: CryptoKey;
+  /** non-extractable: re-imported from pkcs8 after generation (see below) */
   privateKey: CryptoKey;
   /** raw public key, unpadded base64url (Ed25519 raw = 32 bytes = 43 chars) */
   pubB64: string;
@@ -52,11 +53,25 @@ export function fpOf(pubB64: string): string {
 
 export async function generateIdentity(): Promise<Identity> {
   if (!(await isIdentityAvailable())) throw new Error("Ed25519 not available");
+  // Web Crypto applies a single extractable flag to the whole Ed25519 pair,
+  // and we must export the public key (raw) into the payload. So the pair is
+  // generated extractable, the private key is immediately re-imported as
+  // NON-extractable from its one-time pkcs8 export, and the original
+  // extractable key is dropped. The pkcs8 bytes transit JS memory exactly
+  // once — never stored, never sent.
   const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
-  const raw = await crypto.subtle.exportKey("raw", pair.publicKey);
-  const pubB64 = base64UrlEncode(new Uint8Array(raw));
+  const rawPub = await crypto.subtle.exportKey("raw", pair.publicKey);
+  const pubB64 = base64UrlEncode(new Uint8Array(rawPub));
   if (!isIdentityPubB64(pubB64)) throw new Error("unexpected public key encoding");
-  return { publicKey: pair.publicKey, privateKey: pair.privateKey, pubB64, fp: fpOf(pubB64) };
+  const pkcs8 = await crypto.subtle.exportKey("pkcs8", pair.privateKey);
+  const privateKey = await crypto.subtle.importKey(
+    "pkcs8",
+    pkcs8 as BufferSource,
+    { name: "Ed25519" },
+    false,
+    ["sign"],
+  );
+  return { publicKey: pair.publicKey, privateKey, pubB64, fp: fpOf(pubB64) };
 }
 
 export async function signIdentity(privateKey: CryptoKey, data: string): Promise<string> {

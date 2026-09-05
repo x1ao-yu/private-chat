@@ -45,6 +45,19 @@ describe("identity key generation (P6)", () => {
     expect(a.pubB64).not.toBe(b.pubB64);
   });
 
+  it("keeps the private key non-extractable while the public key stays exportable", async () => {
+    const id = await makeIdentity();
+    // hardening: the private key must reject any export attempt
+    await expect(crypto.subtle.exportKey("pkcs8", id.privateKey)).rejects.toThrow();
+    await expect(crypto.subtle.exportKey("jwk", id.privateKey)).rejects.toThrow();
+    // the public key is still exportable (32-byte raw, travels in the payload)
+    const rawPub = await crypto.subtle.exportKey("raw", id.publicKey);
+    expect(new Uint8Array(rawPub).length).toBe(32);
+    // the re-imported key still signs
+    const sig = await signIdentity(id.privateKey, "hello");
+    await expect(verifyIdentity(id.pubB64, sig, "hello")).resolves.toBe(true);
+  });
+
   it("rejects malformed public keys", () => {
     expect(isIdentityPubB64("short")).toBe(false);
     expect(isIdentityPubB64("A".repeat(43) + "!")).toBe(false);
