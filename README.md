@@ -104,4 +104,4 @@ Server → Client: `channel_created`, `joined`, `left`, `message`, `key_updated`
 
 ## Roadmap
 
-P0 Foundation done, P1 Minimal Chat done, P2 E2EE done, P3 Room Keys done, P4 Privacy done, P5 Security done, P6 Anonymous Identity done — see `ROADMAP.md`. Next is P7 Advanced E2EE (group key management, forward secrecy, post-compromise security).
+P0 Foundation done, P1 Minimal Chat done, P2 E2EE done, P3 Room Keys done, P4 Privacy done, P5 Security done, P6 Anonymous Identity done. P7: standardized group protocols evaluated — MLS adoption deferred, see `docs/mls-evaluation.md` (no FS/PCS claims today; see SECURITY.md "P7 Notes").

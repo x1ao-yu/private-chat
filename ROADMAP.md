@@ -57,10 +57,10 @@
 
 ## P7 — Advanced E2EE
 
-* [ ] Group key management
-* [ ] Forward secrecy
-* [ ] Post-compromise security
-* [ ] Evaluate standardized group protocols
+* [ ] Group key management (deferred — see docs/mls-evaluation.md)
+* [ ] Forward secrecy (deferred — see docs/mls-evaluation.md)
+* [ ] Post-compromise security (deferred — see docs/mls-evaluation.md)
+* [x] Evaluate standardized group protocols (docs/mls-evaluation.md — adoption deferred, unlock conditions documented)
 
 ## P8 — Advanced Communication
 

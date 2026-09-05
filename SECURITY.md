@@ -80,6 +80,25 @@ Do not claim a security property unless the protocol and implementation actually
 * **Boundaries (P6)**: TOFU only — no PKI, no out-of-band verification protocol; a fresh key claiming a fresh nick is indistinguishable from a new member. Unsigned legacy claims remain spoofable by room-key holders (accepted trade-off of the additive layer; signed content is not). This is **pseudonymity, not anonymity**: keys are per-room, but the same room session presents the same keypair to all its members, and a refresh/leave+rejoin produces a new identity. Identity-key rotation is not provided (P7 scope).
 * **Payload budget (P6)**: the wire limit stays 8192 (`protocol/schema.json` unchanged). The inner plaintext budget is derived and enforced **before** encrypting (`MAX_INNER_UTF8 = 6098` UTF-8 bytes in `codec.ts`: 8192 − 40 envelope overhead, b64url ¾ expansion, − 16 tag), so oversized input fails with a clear `message too long` error instead of a generic encode failure after the ~250-char signed-JSON overhead.
 
+## P7 Notes
+
+* **Evaluation done, adoption deferred** (2026-09-05): see `docs/mls-evaluation.md`. MLS
+  (RFC 9420) is the only standardized protocol that provides group FS/PCS; the only audited
+  implementation (OpenMLS, SRLabs 2026-05) has no official JS bindings, and the only
+  browser-native path (ts-mls) is unaudited. Adoption is deferred until one of the documented
+  unlock conditions holds.
+* **No FS/PCS claims**: the current model does NOT provide forward secrecy or post-compromise
+  security. There is one shared room key per session (P3); compromise of that key exposes all
+  messages within its exposure window. Manual rotation (P5 "Rotate & share" / "Rotate
+  locally") is the only exposure-window control, and it is cooperative/discretionary — not a
+  protocol guarantee. P6 signatures provide insider attribution of message content; they do
+  not change key distribution.
+* **Honest scope statement**: even a future session-scoped MLS adoption (no persistence by
+  design) would deliver FS within a session and PCS within the epoch chain — not across
+  restarts. Any adoption requires the infra gaps documented in `docs/mls-evaluation.md` §5
+  (per-room commit ordering, payload framing, in-band KeyPackage signaling) to be addressed
+  in an approved plan first.
+
 ## Security-Sensitive Changes
 
 Review carefully before implementing:
