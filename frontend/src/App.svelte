@@ -19,6 +19,7 @@
     isValidNick,
   } from "./e2ee.ts";
   import { parseInvite, parseKeyFromHash } from "./invite.ts";
+  import { generateIdentity, isIdentityAvailable, wrapSignedNick, type Identity } from "./identity.ts";
   import { SvelteMap } from "svelte/reactivity";
 
   let path = $state(window.location.pathname);
@@ -50,6 +51,12 @@
   // joined room history for sidebar (in-memory, this tab only)
   let roomHistory = $state<{ id: string; online: number; connected: boolean }[]>([]);
 
+  // P6 session identity (Ed25519): one keypair per tab, shared by all rooms.
+  // Tab memory only — regenerated on every refresh by design; never persisted,
+  // never sent to the server except the public key inside the E2EE payload.
+  let identity = $state<Identity | null>(null);
+  let identityReady = $state(false);
+
   // per-room keys, tab memory only (P3): CryptoKey for crypto, b64 copy solely
   // to rebuild invite links — never persisted, never sent to the server
   const roomKeys = new Map<string, CryptoKey>();
@@ -64,6 +71,36 @@
   let roomNameDraft = $state("");
   let editingNick = $state(false);
   let nickDraft = $state("");
+
+  $effect(() => {
+    let cancelled = false;
+    isIdentityAvailable()
+      .then((ok) => {
+        if (!ok || cancelled) return null;
+        return generateIdentity();
+      })
+      .then((i) => {
+        if (!cancelled && i) identity = i;
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) identityReady = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  // push the session identity into every store as soon as it exists (and into
+  // stores created later — iterating the SvelteMap tracks additions); selfNick
+  // is read at send time so later renames apply to new signed messages
+  $effect(() => {
+    const ident = identity;
+    if (!ident) return;
+    for (const [id, s] of stores) {
+      s.setIdentity(ident, () => selfNicks.get(id) ?? "Anonymous");
+    }
+  });
 
   function navigate(to: string) {
     history.pushState({}, "", to);
@@ -238,7 +275,11 @@
         const k = roomKeys.get(id);
         if (k) {
           lastBroadcastNickByRoom.set(id, nick);
-          wrapNick(createAesGcmCrypto(k, id), nick).then(w => stores.get(id)?.sendSetNickname(w)).catch(()=>{ lastBroadcastNickByRoom.set(id, null); });
+          // P6: prefer a signed nick claim when the session identity is ready
+          const wrappedNick = identity
+            ? wrapSignedNick(identity, id, nick)
+            : wrapNick(createAesGcmCrypto(k, id), nick);
+          wrappedNick.then(w => stores.get(id)?.sendSetNickname(w)).catch(()=>{ lastBroadcastNickByRoom.set(id, null); });
         }
       }
       const rname = roomNames.get(id);
@@ -325,8 +366,9 @@
     try {
       const k = roomKeys.get(channelId);
       if (!k) throw new Error("no key");
-      const crypto = createAesGcmCrypto(k, channelId);
-      const wrapped = await wrapNick(crypto, nick);
+      const wrapped = identity
+        ? await wrapSignedNick(identity, channelId, nick)
+        : await wrapNick(createAesGcmCrypto(k, channelId), nick);
       const ok = await channelStore.sendSetNickname(wrapped);
       if (!ok) throw new Error("not connected");
       selfNicks.set(channelId, nick);
@@ -718,6 +760,22 @@
           {:else}
             <span class="text-zinc-600">You as <span class="font-medium text-zinc-900">{selfNicks.get(channelId) ?? "Anonymous"}</span></span>
             <button class="text-zinc-400 hover:text-zinc-600" title="Edit nickname" onclick={() => { nickDraft = selfNicks.get(channelId) ?? ""; editingNick = true; }}>✎</button>
+            {#if identity}
+              <span
+                class="flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500"
+                title={`This session's identity (Ed25519) · ${identity.pubB64} — tab memory only, not permanent`}
+              >
+                <span class="h-1.5 w-1.5 rounded-full" style="background:{hashColor(identity.fp)}"></span>
+                This session's identity: {identity.fp}…
+              </span>
+            {:else if identityReady}
+              <span
+                class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700"
+                title="Ed25519 unavailable — messages are sent without identity signatures"
+              >
+                identity unavailable
+              </span>
+            {/if}
           {/if}
           <span class="ml-auto hidden sm:inline text-[11px] text-zinc-400">per-room · E2EE synced · tab memory</span>
         </div>
@@ -795,7 +853,7 @@
               onClear={clearLocalMessages}
             />
             <p class="pb-2 text-center text-[11px] text-zinc-400">
-              E2EE · 12B IV + 16B messageId · AAD v1|channelId|messageId · key in memory only · server sees ciphertext
+              E2EE · 12B IV + 16B messageId · AAD v1|channelId|messageId · keys in memory only · server sees ciphertext · session identity Ed25519
             </p>
           </div>
         </div>

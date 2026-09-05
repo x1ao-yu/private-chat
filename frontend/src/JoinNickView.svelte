@@ -19,7 +19,7 @@
 <div class="flex flex-1 items-center justify-center p-8">
   <div class="w-full max-w-md rounded-2xl border border-zinc-200 bg-surface p-6 shadow-sm">
     <h2 class="text-lg font-bold tracking-tight">Join Room</h2>
-    <p class="mt-1 text-xs text-zinc-500">Set your nickname for this room (per-room, not identity). Tab memory only.</p>
+    <p class="mt-1 text-xs text-zinc-500">Set your nickname for this room. Messages are signed with this session's identity (Ed25519, tab memory only — not a permanent identity).</p>
     <div class="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3">
       <div class="text-[11px] font-medium uppercase tracking-wide text-zinc-500">Room</div>
       <div class="mt-1 truncate text-sm font-semibold text-zinc-900" title={roomNamePreview}>{roomNamePreview}</div>
@@ -55,7 +55,7 @@
           {creating ? "Joining..." : "Confirm & Join"}
         </button>
       </div>
-      <p class="text-center text-[11px] text-zinc-400">nickname E2EE synced after join · not persisted</p>
+      <p class="text-center text-[11px] text-zinc-400">nickname E2EE synced after join · signed with this session's identity · not persisted</p>
     </div>
   </div>
 </div>
