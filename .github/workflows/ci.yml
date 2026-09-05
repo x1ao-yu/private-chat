@@ -44,3 +44,13 @@ jobs:
 
       - name: Lint
         run: make lint
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # build both images (no push — no registry configured); keeps the
+      # Dockerfiles and nginx config from rotting
+      - name: Build images
+        run: docker compose build

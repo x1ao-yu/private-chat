@@ -71,11 +71,16 @@ make build           # vite build + go build
 make lint            # tsc + go vet
 ```
 
-## Docker（可选）
+## 部署
 
 ```bash
-docker compose up --build  # 前端 :80，后端 :8080
+docker compose up --build --detach   # nginx :80 → 静态资源 + /ws + /health 代理
 ```
+
+- **运行形态**:前端容器以非特权 nginx 提供构建产物(容器内 8080,对外映射 80),并将 `/ws`、`/health` 代理到 backend;backend **仅存在于 compose 内网**(不发布端口,如需临时调试可在 backend 下加 `"8080:8080"`)。两服务均配置 `restart: unless-stopped` 与镜像健康检查,前端等待 backend 健康后启动。
+- **TLS / wss**:由**你自己的**外层反向代理 / 负载均衡终结——将其指向 80 端口并提供 HTTPS 即可,前端按页面协议自动使用 `wss://`。容器内有意不设置 HSTS,请在 TLS 边缘开启。
+- **缓存**:带哈希的 `/assets/*` 设置 `immutable`(一年);`index.html` 为 `no-cache`,保证新版本立即生效。
+- **按设计无持久化**:backend 重启即丢弃所有房间(P4)。已知限制:WS 处理器目前关闭了 Origin 校验(`InsecureSkipVerify`,`backend/internal/ws/transport.go`)——收紧属于 P9 "Abuse protection" 范畴。
 
 ## 通信协议
 

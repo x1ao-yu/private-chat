@@ -71,11 +71,25 @@ make build           # vite build + go build
 make lint            # tsc + go vet
 ```
 
-## Docker (optional)
+## Deployment
 
 ```bash
-docker compose up --build  # frontend :80, backend :8080
+docker compose up --build --detach   # nginx :80 → static assets + /ws + /health proxy
 ```
+
+- **What runs**: the frontend container serves the built SPA on port 80 (unprivileged
+  nginx, internal 8080) and proxies `/ws` and `/health` to the backend, which is **internal
+  to the compose network** (no published port; temporarily add `"8080:8080"` to inspect it).
+  Both services have `restart: unless-stopped` and image healthchecks; the frontend waits
+  for a healthy backend.
+- **TLS / wss**: terminated at **your** outer reverse proxy / load balancer — point it at
+  port 80 and serve HTTPS. The app picks `wss://` automatically from the page protocol.
+  HSTS is intentionally not set inside the container; enable it at your TLS edge.
+- **Caching**: hashed `/assets/*` are `immutable` (1y); `index.html` is `no-cache` so new
+  deploys are picked up immediately.
+- **In-memory by design**: a backend restart drops all rooms (P4). Known limitation: the WS
+  handler currently runs with origin verification disabled (`InsecureSkipVerify`,
+  `backend/internal/ws/transport.go`) — tightening that belongs to P9 "Abuse protection".
 
 ## Protocol
 

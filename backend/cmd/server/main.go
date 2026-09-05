@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"chat/internal/channel"
@@ -34,8 +37,29 @@ func main() {
 	}()
 
 	addr := ":8080"
-	log.Printf("backend listening on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	httpSrv := &http.Server{Addr: addr, Handler: mux}
+
+	// graceful shutdown for container stop (SIGTERM): stop accepting, drain
+	// briefly, then exit — in-memory state is dropped by design
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	listenErr := make(chan error, 1)
+	go func() {
+		log.Printf("backend listening on %s", addr)
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			listenErr <- err
+		}
+	}()
+
+	select {
+	case err := <-listenErr:
 		log.Fatalf("listen: %v", err)
+	case <-ctx.Done():
+		log.Printf("shutting down")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("shutdown: %v", err)
+		}
 	}
 }

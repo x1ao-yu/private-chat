@@ -1,17 +1,21 @@
 # Optional — not required for local dev (pnpm dev + go run)
-# For production: docker compose up --build
+# For production: docker compose up --build --detach
+# TLS/wss terminates at your outer reverse proxy / load balancer (see README "Deployment").
 services:
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    ports:
-      - "8080:8080"
+    restart: unless-stopped
+    # internal only: the frontend nginx proxies /ws and /health (least exposure).
+    # to inspect the backend directly, temporarily add "8080:8080" under ports.
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
     ports:
-      - "80:80"
+      - "80:8080"
+    restart: unless-stopped
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
