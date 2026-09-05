@@ -28,7 +28,7 @@
       <label class="block">
         <span class="text-xs font-medium text-zinc-700">Room name (1-32)</span>
         <input
-          class="mt-1.5 h-9 w-full rounded-lg border border-zinc-200 bg-surface px-3 text-sm outline-none focus:border-brand"
+          class="mt-1.5 h-9 w-full rounded-lg border border-zinc-200 bg-surface px-3 text-base outline-none focus:border-brand sm:text-sm"
           placeholder="e.g. Weekend plan"
           bind:value={roomName}
           maxlength={32}
@@ -39,7 +39,7 @@
       <label class="block">
         <span class="text-xs font-medium text-zinc-700">Your nickname (1-20)</span>
         <input
-          class="mt-1.5 h-9 w-full rounded-lg border border-zinc-200 bg-surface px-3 text-sm outline-none focus:border-brand"
+          class="mt-1.5 h-9 w-full rounded-lg border border-zinc-200 bg-surface px-3 text-base outline-none focus:border-brand sm:text-sm"
           placeholder="e.g. Alice"
           bind:value={nick}
           maxlength={20}

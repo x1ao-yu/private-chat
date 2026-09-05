@@ -101,7 +101,7 @@
             </span>
           {/if}
           <span class="text-zinc-500">{displayNick(m)}</span>
-          <span class="flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+          <span class="flex gap-2 opacity-0 transition-opacity group-hover:opacity-100 pointer-coarse:opacity-100">
             <button class="hover:text-zinc-600" title="Copy" onclick={() => onCopy(m.payload)}>Copy</button>
             <button class="hover:text-red-600" title="Delete (local)" onclick={() => onDelete(i)}>Delete</button>
           </span>
@@ -142,7 +142,7 @@
           </div>
           <div class="mt-1 flex items-center gap-2 text-xs text-zinc-400">
             <span>{fmtTime(m.ts)}</span>
-            <span class="flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+            <span class="flex gap-2 opacity-0 transition-opacity group-hover:opacity-100 pointer-coarse:opacity-100">
               <button class="hover:text-zinc-600" title="Copy" onclick={() => onCopy(m.payload)}>Copy</button>
               <button class="hover:text-red-600" title="Delete (local)" onclick={() => onDelete(i)}>Delete</button>
             </span>

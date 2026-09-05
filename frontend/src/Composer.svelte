@@ -14,7 +14,7 @@
   } = $props();
 </script>
 
-<div class="flex items-center gap-3 p-4">
+<div class="flex items-center gap-3 px-4 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
   <button
     class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-zinc-200 text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-700"
     title="Clear local chat"
@@ -30,10 +30,13 @@
   </button>
 
   <input
-    class="h-10 min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-4 text-sm outline-none placeholder:text-zinc-400 focus:border-brand focus:bg-surface"
+    class="h-10 min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-4 text-base outline-none placeholder:text-zinc-400 focus:border-brand focus:bg-surface sm:text-sm"
     placeholder="Message..."
     bind:value={input}
     onkeydown={(e) => {
+      // IME composition guard: Enter confirms the candidate text (e.g. CJK
+      // input methods) and must not send the message
+      if (e.isComposing || e.key === "Process") return;
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         onSend();

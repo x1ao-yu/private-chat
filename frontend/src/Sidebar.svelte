@@ -60,7 +60,7 @@
     <div class="mb-1.5 text-xs font-medium text-zinc-500">Join Room</div>
     <div class="flex gap-2">
       <input
-        class="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm outline-none placeholder:text-zinc-400 focus:border-brand focus:bg-surface"
+        class="min-w-0 flex-1 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-2 text-base outline-none placeholder:text-zinc-400 focus:border-brand focus:bg-surface sm:text-sm"
         placeholder="Room ID or Invite Link"
         bind:value={joinInput}
         onkeydown={(e) => e.key === "Enter" && submitJoin()}

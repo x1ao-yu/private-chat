@@ -70,6 +70,8 @@
   let roomNameDraft = $state("");
   let editingNick = $state(false);
   let nickDraft = $state("");
+  // narrow-screen overflow menu for the room header actions (⋯)
+  let headerMenuOpen = $state(false);
 
   $effect(() => {
     let cancelled = false;
@@ -633,11 +635,11 @@
   }
 </script>
 
-<div class="flex h-screen bg-surface-subtle font-sans text-zinc-900 antialiased">
+<div class="flex h-dvh bg-surface-subtle font-sans text-zinc-900 antialiased pt-[env(safe-area-inset-top)]">
   {#if drawerOpen}
     <button class="fixed inset-0 z-20 bg-black/30 lg:hidden" aria-label="Close menu" onclick={() => (drawerOpen = false)}></button>
   {/if}
-  <div class="fixed inset-y-0 left-0 z-30 w-64 transform bg-surface transition-transform lg:static lg:translate-x-0 {drawerOpen ? 'translate-x-0' : '-translate-x-full'}">
+  <div class="fixed inset-y-0 left-0 z-30 w-64 transform bg-surface transition-transform lg:static lg:translate-x-0 {drawerOpen ? 'translate-x-0' : '-translate-x-full'} pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
     <Sidebar
       rooms={sidebarRooms}
       roomNames={roomNames}
@@ -679,8 +681,21 @@
         </div>
       {/if}
     {:else if path === "/"}
-      <!-- Home: hero in main area -->
-      <div class="flex flex-1 items-center justify-center p-8">
+      <!-- Home: drawer trigger on narrow screens (hamburger only exists in the room header) + hero -->
+      <div class="flex flex-1 flex-col">
+        <div class="flex justify-end p-3 lg:hidden">
+          <button
+            class="flex h-9 w-9 items-center justify-center rounded-lg text-zinc-700 hover:bg-zinc-100"
+            title="Open menu"
+            aria-label="Open menu"
+            onclick={() => (drawerOpen = true)}
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M3 12h18M3 18h18" />
+            </svg>
+          </button>
+        </div>
+        <div class="flex flex-1 items-center justify-center p-8">
         <div class="max-w-md text-center">
           <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-brand text-white">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
@@ -702,11 +717,12 @@
             <p class="mt-4 text-xs text-amber-600">Identity authentication unavailable (Ed25519 unsupported) — messages will be sent unsigned and marked as unauthenticated</p>
           {/if}
         </div>
+        </div>
       </div>
     {:else if path.startsWith("/r/")}
       <!-- Room header -->
       <div class="flex h-14 shrink-0 items-center justify-between border-b border-zinc-200 px-5">
-        <div class="flex items-center gap-3">
+        <div class="flex min-w-0 flex-1 items-center gap-3">
           <button
             class="flex h-8 w-8 items-center justify-center rounded-lg text-zinc-700 hover:bg-zinc-100 lg:hidden"
             title="Open menu"
@@ -729,7 +745,7 @@
           </button>
           {#if editingRoomName}
             <input
-              class="h-8 w-40 sm:w-56 rounded-lg border border-zinc-200 bg-surface px-2 text-sm outline-none focus:border-brand"
+              class="h-9 w-40 sm:w-56 rounded-lg border border-zinc-200 bg-surface px-2 text-base outline-none focus:border-brand sm:text-sm"
               placeholder="Room name 1-32"
               bind:value={roomNameDraft}
               maxlength={32}
@@ -738,13 +754,13 @@
             <button class="rounded-lg bg-brand px-2 py-1 text-xs text-white" onclick={updateRoomName}>Save</button>
             <button class="rounded-lg bg-zinc-100 px-2 py-1 text-xs" onclick={() => (editingRoomName = false)}>Cancel</button>
           {:else}
-            <span class="text-lg font-bold tracking-tight truncate max-w-[12rem] sm:max-w-xs" title={currentRoomName ?? channelId}>{headerRoomLabel}</span>
+            <span class="min-w-0 flex-1 truncate text-lg font-bold tracking-tight sm:max-w-xs" title={currentRoomName ?? channelId}>{headerRoomLabel}</span>
             {#if channelStore}
               <button class="text-xs text-zinc-400 hover:text-zinc-600" title="Edit room name" onclick={() => { roomNameDraft = roomNames.get(channelId) ?? ""; editingRoomName = true; }}>✎</button>
             {/if}
           {/if}
           {#if channelStore}
-            <span class="flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs text-zinc-600">
+            <span class="hidden sm:flex items-center gap-1.5 rounded-full bg-zinc-100 px-2.5 py-0.5 text-xs text-zinc-600">
               <span
                 class="h-2 w-2 rounded-full {channelStore.status === 'open'
                   ? 'bg-ok'
@@ -758,7 +774,7 @@
             <span class="rounded-full bg-amber-100 px-2.5 py-0.5 text-xs text-amber-700">need key</span>
           {/if}
         </div>
-        <div class="flex items-center gap-1">
+        <div class="relative flex shrink-0 items-center gap-1">
           <button
             class="flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium {copyFeedback === 'fail' ? 'text-red-600 hover:bg-red-50' : 'text-brand hover:bg-brand-subtle'}"
             onclick={copyInviteLink}
@@ -771,7 +787,7 @@
           </button>
           {#if channelStore}
             <button
-              class="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 disabled:opacity-50"
+              class="hidden sm:flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-zinc-600 hover:bg-zinc-100 disabled:opacity-50"
               disabled={rotating || channelStore.status !== "open"}
               title="Generate new key and share via E2EE (all members get new key)"
               onclick={rotateKeyViaE2EE}
@@ -779,13 +795,46 @@
               {rotating ? "Rotating…" : "Rotate & share"}
             </button>
             <button
-              class="flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+              class="hidden sm:flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50"
               disabled={rotating || channelStore.status !== "open"}
               title="Rotate locally only — old members won't get new key (cooperative eviction)"
               onclick={rotateKeyLocally}
             >
               Rotate locally
             </button>
+            <!-- narrow screens: rotate actions collapse into an overflow menu -->
+            <button
+              class="flex sm:hidden h-8 w-8 items-center justify-center rounded-lg text-zinc-600 hover:bg-zinc-100 disabled:opacity-50"
+              aria-label="More actions"
+              aria-expanded={headerMenuOpen}
+              disabled={rotating || channelStore.status !== "open"}
+              onclick={() => (headerMenuOpen = !headerMenuOpen)}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <circle cx="5" cy="12" r="1.8" />
+                <circle cx="12" cy="12" r="1.8" />
+                <circle cx="19" cy="12" r="1.8" />
+              </svg>
+            </button>
+            {#if headerMenuOpen}
+              <button class="fixed inset-0 z-30 cursor-default" aria-label="Close menu" onclick={() => (headerMenuOpen = false)}></button>
+              <div class="absolute right-0 top-full z-40 mt-1 w-48 rounded-lg border border-zinc-200 bg-surface p-1 shadow-lg">
+                <button
+                  class="flex w-full items-center rounded-md px-3 py-2.5 text-left text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                  disabled={rotating || channelStore.status !== "open"}
+                  onclick={() => { headerMenuOpen = false; rotateKeyViaE2EE(); }}
+                >
+                  {rotating ? "Rotating…" : "🔑 Rotate & share"}
+                </button>
+                <button
+                  class="flex w-full items-center rounded-md px-3 py-2.5 text-left text-sm text-amber-700 hover:bg-amber-50 disabled:opacity-50"
+                  disabled={rotating || channelStore.status !== "open"}
+                  onclick={() => { headerMenuOpen = false; rotateKeyLocally(); }}
+                >
+                  Rotate locally
+                </button>
+              </div>
+            {/if}
           {/if}
         </div>
       </div>
@@ -794,7 +843,7 @@
         <div class="flex items-center gap-2 border-b border-zinc-100 bg-zinc-50 px-5 py-2 text-xs">
           {#if editingNick}
             <input
-              class="h-7 rounded-lg border border-zinc-200 bg-surface px-2 text-xs outline-none focus:border-brand"
+              class="h-8 rounded-lg border border-zinc-200 bg-surface px-2 text-base outline-none focus:border-brand sm:text-xs"
               placeholder="Nickname 1-20"
               bind:value={nickDraft}
               maxlength={20}
@@ -845,7 +894,7 @@
           </p>
           <div class="mt-3 flex gap-2">
             <input
-              class="h-9 min-w-0 flex-1 rounded-lg border border-zinc-200 bg-surface px-3 text-xs outline-none focus:border-brand"
+              class="h-9 min-w-0 flex-1 rounded-lg border border-zinc-200 bg-surface px-3 text-base outline-none focus:border-brand sm:text-xs"
               placeholder="paste key (43 chars base64url)"
               bind:value={keyInput}
             />
@@ -897,7 +946,7 @@
               onSend={handleSend}
               onClear={clearLocalMessages}
             />
-            <p class="pb-2 text-center text-[11px] text-zinc-400">
+            <p class="px-3 pb-2 text-center text-[11px] text-zinc-400">
               E2EE · 12B IV + 16B messageId · AAD v1|channelId|messageId · keys in memory only · server sees ciphertext · session identity Ed25519
             </p>
           </div>
