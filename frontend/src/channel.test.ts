@@ -32,15 +32,29 @@ async function makeCrypto(channelId = CH): Promise<Crypto> {
   return createAesGcmCrypto(await generateRoomKey(), channelId);
 }
 
-/** Connect a store, simulate server accept, and assert the automatic join frame. */
+/** Connect a store, simulate server accept, and assert the automatic join frame.
+ * Join is gated on the per-room identity generation (P6), hence the tick. */
 async function openStore(channelId: string, crypto: Crypto, opts = {}) {
   const store = new ChannelStore(channelId, crypto, opts);
   store.connect();
   const ws = MockWS.instances[0];
   ws.simulateOpen();
+  await tick();
   expect(JSON.parse(ws.sent[0])).toEqual({ type: "join_channel", channelId });
   return { store, ws };
 }
+
+  /** Simulate a server message frame whose inner plaintext is signed by a peer identity. */
+async function peerSignedFrame(
+    crypto: Crypto,
+    peer: Identity,
+    text: string,
+    nick: string,
+    mid = newMessageIdB64(),
+  ): Promise<string> {
+    const inner = await wrapSignedMessage(peer, CH, mid, text, nick);
+    return msgFrame(CH, await crypto.encrypt(inner, { messageIdB64: mid }));
+  }
 
 describe("createChannel helper", () => {
   let restoreWS: () => void;
@@ -283,9 +297,9 @@ describe("ChannelStore", () => {
     expect(store.status).toBe("closed");
   });
 
-  it("sendMessage encrypts plaintext before sending", async () => {
+  it("sendMessage encrypts plaintext before sending (legacy unsigned path)", async () => {
     const crypto = await makeCrypto();
-    const { store, ws } = await openStore(CH, crypto);
+    const { store, ws } = await openStore(CH, crypto, { identity: false });
     const ok = await store.sendMessage("secret text");
     expect(ok).toBe(true);
     const frame = JSON.parse(ws.sent[ws.sent.length - 1]);
@@ -327,6 +341,7 @@ describe("ChannelStore", () => {
     const wsB = MockWS.instances[1];
     wsA.simulateOpen();
     wsB.simulateOpen();
+    await tick(); // join is gated on per-room identity generation (P6)
     // each store joins its own room
     expect(JSON.parse(wsA.sent[0]).channelId).toBe("room-a");
     expect(JSON.parse(wsB.sent[0]).channelId).toBe("room-b");
@@ -364,23 +379,13 @@ describe("identity: signed messages (P6)", () => {
     restoreWS();
   });
 
-  /** Simulate a server message frame whose inner plaintext is signed by a peer identity. */
-  async function peerSignedFrame(
-    crypto: Crypto,
-    peer: Identity,
-    text: string,
-    nick: string,
-    mid = newMessageIdB64(),
-  ): Promise<string> {
-    const inner = await wrapSignedMessage(peer, CH, mid, text, nick);
-    return msgFrame(CH, await crypto.encrypt(inner, { messageIdB64: mid }));
-  }
-
   it("sendMessage signs the inner payload and binds the envelope messageId", async () => {
     const crypto = await makeCrypto();
-    const identity = await generateIdentity();
     const { store, ws } = await openStore(CH, crypto);
-    store.setIdentity(identity, () => "self-nick");
+    const identity = await store.identityReady;
+    expect(identity).not.toBeNull();
+    expect(store.identityStatus).toBe("ready");
+    store.setSelfNick(() => "self-nick");
     await store.sendMessage("signed hello");
     const frame = JSON.parse(ws.sent[ws.sent.length - 1]);
     expect(frame.type).toBe("send_message");
@@ -391,15 +396,15 @@ describe("identity: signed messages (P6)", () => {
     expect(inner.v).toBe(1);
     expect(inner.text).toBe("signed hello");
     expect(inner.nick).toBe("self-nick");
-    expect(inner.pk).toBe(identity.pubB64);
+    expect(inner.pk).toBe(identity!.pubB64);
     // the envelope carries exactly the pre-set messageId the signature covers
     expect(frame.payload.split(".")[1]).toBeTruthy();
     store.disconnect();
   });
 
-  it("sendMessage falls back to the unsigned legacy path without identity", async () => {
+  it("sendMessage falls back to the unsigned legacy path when identity is disabled", async () => {
     const crypto = await makeCrypto();
-    const { store, ws } = await openStore(CH, crypto);
+    const { store, ws } = await openStore(CH, crypto, { identity: false });
     await store.sendMessage("legacy hello");
     const frame = JSON.parse(ws.sent[ws.sent.length - 1]);
     expect(await crypto.decrypt(frame.payload)).toBe("legacy hello");
@@ -461,18 +466,17 @@ describe("identity: signed messages (P6)", () => {
     ws.simulateMessage(await peerSignedFrame(crypto, mallory, "me too", "alice"));
     await tick();
     expect(store.messages[1].ident?.status).toBe("conflict");
-    // the original claimant stays verified
+    // the original claimant stays verified (timeline: msg, conflict, sys warning)
     ws.simulateMessage(await peerSignedFrame(crypto, alice, "still me", "alice"));
     await tick();
-    expect(store.messages[2].ident?.status).toBe("verified");
+    expect(store.messages[3].ident?.status).toBe("verified");
     store.disconnect();
   });
 
   it("verifies the sender's own echo with the session identity", async () => {
     const crypto = await makeCrypto();
-    const identity = await generateIdentity();
     const { store, ws } = await openStore(CH, crypto);
-    store.setIdentity(identity, () => "self-nick");
+    store.setSelfNick(() => "self-nick");
     await store.sendMessage("echo me");
     const frame = JSON.parse(ws.sent[ws.sent.length - 1]);
     ws.simulateMessage(
@@ -516,6 +520,107 @@ describe("identity: signed messages (P6)", () => {
     await tick();
     expect(onNicknameUpdated).toHaveBeenCalledWith("peer-old", "oldnick");
     expect(store.error).toBeNull();
+    store.disconnect();
+  });
+});
+
+describe("identity: risk hardening (P6)", () => {
+  let restoreWS: () => void;
+  beforeEach(() => {
+    restoreWS = installMockWS();
+  });
+  afterEach(() => {
+    restoreWS();
+  });
+
+  it("generates a distinct identity per room (cross-room unlinkable)", async () => {
+    const cryptoA = await makeCrypto("room-a");
+    const cryptoB = await makeCrypto("room-b");
+    const sA = new ChannelStore("room-a", cryptoA);
+    const sB = new ChannelStore("room-b", cryptoB);
+    const a = await sA.identityReady;
+    const b = await sB.identityReady;
+    expect(a).not.toBeNull();
+    expect(b).not.toBeNull();
+    expect(a!.pubB64).not.toBe(b!.pubB64);
+    sA.disconnect();
+    sB.disconnect();
+  });
+
+  it("ignores unknown structured payloads instead of rendering raw JSON", async () => {
+    const crypto = await makeCrypto();
+    const { store, ws } = await openStore(CH, crypto);
+    // a future client version's inner payload type
+    ws.simulateMessage(
+      msgFrame(CH, await crypto.encrypt(JSON.stringify({ t: "future_kind", v: 9, data: "hi" }))),
+    );
+    await tick();
+    // malformed protocol-internal format (t:"msg" but broken fields)
+    ws.simulateMessage(
+      msgFrame(CH, await crypto.encrypt(JSON.stringify({ t: "msg", v: 1, text: "x" }))),
+    );
+    await tick();
+    expect(store.messages).toHaveLength(0);
+    expect(store.error).toBeNull();
+    // plain user text that happens to look like JSON but has no type tag renders as-is
+    ws.simulateMessage(msgFrame(CH, await crypto.encrypt('{"a":1}')));
+    await tick();
+    expect(store.messages).toHaveLength(1);
+    expect(store.messages[0].payload).toBe('{"a":1}');
+    store.disconnect();
+  });
+
+  it("announces a key change once per contested (nick, fingerprint) pair", async () => {
+    const crypto = await makeCrypto();
+    const alice = await generateIdentity();
+    const mallory = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    ws.simulateMessage(await peerSignedFrame(crypto, alice, "hi", "alice"));
+    await tick();
+    ws.simulateMessage(await peerSignedFrame(crypto, mallory, "me too", "alice"));
+    await tick();
+    ws.simulateMessage(await peerSignedFrame(crypto, mallory, "again", "alice"));
+    await tick();
+    const sysConflicts = store.messages.filter((m) => m.sys?.sysKind === "identity_conflict");
+    expect(sysConflicts).toHaveLength(1);
+    expect(sysConflicts[0].sys?.nick).toBe("alice");
+    expect(sysConflicts[0].sys?.fp).toBe(mallory.fp);
+    // every contested bubble is still flagged individually
+    expect(store.messages[1].ident?.status).toBe("conflict");
+    expect(store.messages[3].ident?.status).toBe("conflict");
+    store.disconnect();
+  });
+
+  it("flags identity mismatch when one connection presents two identities", async () => {
+    const crypto = await makeCrypto();
+    const alice = await generateIdentity();
+    const mallory = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    const frame = async (ident: Identity, text: string, nick: string) => {
+      const mid = newMessageIdB64();
+      const inner = await wrapSignedMessage(ident, CH, mid, text, nick);
+      return JSON.stringify({ type: "message", channelId: CH, payload: await crypto.encrypt(inner, { messageIdB64: mid }), from: "peer-x", self: false });
+    };
+    ws.simulateMessage(await frame(alice, "hello", "alice"));
+    await tick();
+    expect(store.error).toBeNull();
+    ws.simulateMessage(await frame(mallory, "hello too", "mallory"));
+    await tick();
+    expect(store.error).toMatch(/identity mismatch on connection/);
+    store.disconnect();
+  });
+
+  it("rejects oversized plaintexts with a clear error (wire limit kept)", async () => {
+    const crypto = await makeCrypto();
+    const { store, ws } = await openStore(CH, crypto);
+    const sentBefore = ws.sent.length;
+    // 4000 CJK chars = 12000 UTF-8 bytes, far over the 6098-byte inner budget
+    const ok = await store.sendMessage("好".repeat(4000));
+    expect(ok).toBe(false);
+    expect(store.error).toMatch(/message too long/);
+    expect(ws.sent).toHaveLength(sentBefore);
+    // normal-length messages still go through
+    expect(await store.sendMessage("still fine")).toBe(true);
     store.disconnect();
   });
 });

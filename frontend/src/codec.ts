@@ -58,6 +58,18 @@ const ALL_TYPES = new Set([...CLIENT_TYPES, ...SERVER_TYPES]);
 
 const CHANNEL_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 
+// Wire limit stays 8192 (payload string length). The E2EE envelope spends
+// 40 chars (iv 16 + messageId 22 + 2 dots) and the GCM tag 16 bytes, both
+// b64url-expanded by 4/3, leaving this budget for the INNER plaintext
+// (UTF-8 bytes of the signed JSON or raw text): (8192-40)*3/4 - 16 = 6098.
+// Enforced client-side before encrypting so oversized input fails with a
+// clear error instead of a generic encode failure (P6 signed JSON adds ~250B).
+export const MAX_INNER_UTF8 = 6098;
+
+export function utf8Length(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }

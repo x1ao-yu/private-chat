@@ -19,7 +19,7 @@
     isValidNick,
   } from "./e2ee.ts";
   import { parseInvite, parseKeyFromHash } from "./invite.ts";
-  import { generateIdentity, isIdentityAvailable, wrapSignedNick, type Identity } from "./identity.ts";
+  import { isIdentityAvailable, wrapSignedNick } from "./identity.ts";
   import { SvelteMap } from "svelte/reactivity";
 
   let path = $state(window.location.pathname);
@@ -51,11 +51,10 @@
   // joined room history for sidebar (in-memory, this tab only)
   let roomHistory = $state<{ id: string; online: number; connected: boolean }[]>([]);
 
-  // P6 session identity (Ed25519): one keypair per tab, shared by all rooms.
-  // Tab memory only — regenerated on every refresh by design; never persisted,
-  // never sent to the server except the public key inside the E2EE payload.
-  let identity = $state<Identity | null>(null);
-  let identityReady = $state(false);
+  // P6: each room store generates its OWN Ed25519 session identity (per-room,
+  // cross-room unlinkable, tab memory only). Here we only track whether the
+  // browser supports it at all, for the home-page notice.
+  let identitySupported = $state<boolean | null>(null);
 
   // per-room keys, tab memory only (P3): CryptoKey for crypto, b64 copy solely
   // to rebuild invite links — never persisted, never sent to the server
@@ -74,32 +73,12 @@
 
   $effect(() => {
     let cancelled = false;
-    isIdentityAvailable()
-      .then((ok) => {
-        if (!ok || cancelled) return null;
-        return generateIdentity();
-      })
-      .then((i) => {
-        if (!cancelled && i) identity = i;
-      })
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) identityReady = true;
-      });
+    isIdentityAvailable().then((ok) => {
+      if (!cancelled) identitySupported = ok;
+    });
     return () => {
       cancelled = true;
     };
-  });
-
-  // push the session identity into every store as soon as it exists (and into
-  // stores created later — iterating the SvelteMap tracks additions); selfNick
-  // is read at send time so later renames apply to new signed messages
-  $effect(() => {
-    const ident = identity;
-    if (!ident) return;
-    for (const [id, s] of stores) {
-      s.setIdentity(ident, () => selfNicks.get(id) ?? "Anonymous");
-    }
   });
 
   function navigate(to: string) {
@@ -240,6 +219,9 @@
           },
         });
         stores.set(id, s);
+        // P6: the store generates its own per-room identity; we only supply
+        // the nick claim source (read at send time so renames apply)
+        s.setSelfNick(() => selfNicks.get(id) ?? "Anonymous");
         s.connect();
         keyError = null;
       } catch (e) {
@@ -275,9 +257,10 @@
         const k = roomKeys.get(id);
         if (k) {
           lastBroadcastNickByRoom.set(id, nick);
-          // P6: prefer a signed nick claim when the session identity is ready
-          const wrappedNick = identity
-            ? wrapSignedNick(identity, id, nick)
+          // P6: prefer a signed nick claim when this room's identity is ready
+          // (join is gated on identity, so it always is by the time online rises)
+          const wrappedNick = s.identity
+            ? wrapSignedNick(s.identity, id, nick)
             : wrapNick(createAesGcmCrypto(k, id), nick);
           wrappedNick.then(w => stores.get(id)?.sendSetNickname(w)).catch(()=>{ lastBroadcastNickByRoom.set(id, null); });
         }
@@ -366,8 +349,8 @@
     try {
       const k = roomKeys.get(channelId);
       if (!k) throw new Error("no key");
-      const wrapped = identity
-        ? await wrapSignedNick(identity, channelId, nick)
+      const wrapped = channelStore.identity
+        ? await wrapSignedNick(channelStore.identity, channelId, nick)
         : await wrapNick(createAesGcmCrypto(k, channelId), nick);
       const ok = await channelStore.sendSetNickname(wrapped);
       if (!ok) throw new Error("not connected");
@@ -655,6 +638,8 @@
           {#if createError}<p class="mt-4 text-xs text-red-600">{createError}</p>{/if}
           {#if !isCryptoAvailable()}
             <p class="mt-4 text-xs text-red-600">Web Crypto unavailable — need HTTPS or localhost (no downgrade)</p>
+          {:else if identitySupported === false}
+            <p class="mt-4 text-xs text-amber-600">Identity authentication unavailable (Ed25519 unsupported) — messages will be sent unsigned and marked as unauthenticated</p>
           {/if}
         </div>
       </div>
@@ -760,20 +745,20 @@
           {:else}
             <span class="text-zinc-600">You as <span class="font-medium text-zinc-900">{selfNicks.get(channelId) ?? "Anonymous"}</span></span>
             <button class="text-zinc-400 hover:text-zinc-600" title="Edit nickname" onclick={() => { nickDraft = selfNicks.get(channelId) ?? ""; editingNick = true; }}>✎</button>
-            {#if identity}
+            {#if channelStore?.identity}
               <span
                 class="flex items-center gap-1 rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] text-zinc-500"
-                title={`This session's identity (Ed25519) · ${identity.pubB64} — tab memory only, not permanent`}
+                title={`This room session's identity (Ed25519, per-room, cross-room unlinkable) · ${channelStore.identity.pubB64} — tab memory only, not permanent`}
               >
-                <span class="h-1.5 w-1.5 rounded-full" style="background:{hashColor(identity.fp)}"></span>
-                This session's identity: {identity.fp}…
+                <span class="h-1.5 w-1.5 rounded-full" style="background:{hashColor(channelStore.identity.fp)}"></span>
+                This session's identity: {channelStore.identity.fp}…
               </span>
-            {:else if identityReady}
+            {:else if channelStore?.identityStatus === "unsupported"}
               <span
                 class="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] text-amber-700"
-                title="Ed25519 unavailable — messages are sent without identity signatures"
+                title="Ed25519 unavailable in this browser — identity authentication is OFF: messages are sent without signatures and marked as unauthenticated"
               >
-                identity unavailable
+                identity auth unavailable
               </span>
             {/if}
           {/if}

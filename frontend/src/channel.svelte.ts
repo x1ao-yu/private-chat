@@ -1,6 +1,6 @@
 // channel.svelte.ts — UI state only, composes transport + codec + e2ee
 import { Transport, type TransportStatus } from "./transport.ts";
-import { encode, decode, type AnyMessage } from "./codec.ts";
+import { encode, decode, MAX_INNER_UTF8, utf8Length, type AnyMessage } from "./codec.ts";
 import {
   noopCrypto,
   type Crypto,
@@ -16,6 +16,9 @@ import {
 } from "./e2ee.ts";
 import {
   fpOf,
+  generateIdentity,
+  isIdentityAvailable,
+  isUnknownStructuredPayload,
   parseSignedMessage,
   verifySignedMessage,
   verifySignedNick,
@@ -100,7 +103,13 @@ export type MessageIdent = {
 export type ChatMessage = BroadcastMessage & {
   ts: number;
   /** structured system message; nick is resolved at render time (echoes arrive after the frame) */
-  sys?: { sysKind: "room_name" | "key_rotation"; actor: string };
+  sys?: {
+    sysKind: "room_name" | "key_rotation" | "identity_conflict";
+    actor: string;
+    /** identity_conflict: the contested nick and the new fingerprint */
+    nick?: string;
+    fp?: string;
+  };
   /** present when the sender signed the message with their session identity */
   ident?: MessageIdent;
 };
@@ -109,6 +118,8 @@ export type ChannelStoreOptions = {
   onKeyRotated?: (newKeyB64: string, newCrypto: Crypto) => void;
   onRoomNameUpdated?: (name: string, from: string) => void;
   onNicknameUpdated?: (from: string, nick: string) => void;
+  /** P6: generate a per-room session identity (default true; false = unsigned legacy path, for tests) */
+  identity?: boolean;
 };
 
 export class ChannelStore {
@@ -124,12 +135,21 @@ export class ChannelStore {
   private unsubStatus: (() => void) | null = null;
   private replayCache = new ReplayCache(1000);
   private lastRoomName: string | null = null;
-  // P6 session identity (optional): null keeps the unsigned legacy path
-  private identity: Identity | null = null;
+  // P6 per-room session identity: one Ed25519 keypair generated per room
+  // session (cross-room unlinkable), tab memory only — gone on Leave/refresh.
+  // "unsupported" keeps the unsigned legacy path, surfaced in the UI, never silent.
+  identity: Identity | null = $state(null);
+  identityStatus: "pending" | "ready" | "unsupported" = $state("pending");
+  readonly identityReady: Promise<Identity | null>;
   private selfNick: () => string = () => "Anonymous";
   // TOFU pinning, per room, tab memory: first verified claim of a nick wins;
-  // the same nick from a different identity is flagged as a conflict
+  // the same nick from a different identity is flagged as a key change
   private nickToFp = new Map<string, string>();
+  // conn id -> last verified fingerprint on that connection: one WS connection
+  // presenting two different identity keys is an impersonation signal
+  private fpByConn = new Map<string, string>();
+  // key-change warnings dedupe: `${nick}:${fp}` is announced once per room session
+  private conflictWarned = new Set<string>();
   private onKeyRotated?: (newKeyB64: string, newCrypto: Crypto) => void;
   private onRoomNameUpdated?: (name: string, from: string) => void;
   private onNicknameUpdated?: (from: string, nick: string) => void;
@@ -140,13 +160,28 @@ export class ChannelStore {
     this.onKeyRotated = opts.onKeyRotated;
     this.onRoomNameUpdated = opts.onRoomNameUpdated;
     this.onNicknameUpdated = opts.onNicknameUpdated;
+    this.identityReady = (opts.identity === false
+      ? Promise.resolve(null)
+      : isIdentityAvailable()
+          .then((ok) => (ok ? generateIdentity() : null))
+          .catch(() => null)
+    ).then((i) => {
+      this.identity = i;
+      this.identityStatus = i ? "ready" : "unsupported";
+      return i;
+    });
     this.transport = new Transport(getWsUrl());
 
     this.unsubStatus = this.transport.onStatus((s) => {
       this.status = s;
       if (s === "open") {
         this.error = null;
-        this.sendJoin();
+        // wait for the (fast) per-room identity so the first nick announcement
+        // and messages are signed; join proceeds even when identity generation
+        // failed (unsigned legacy path, flagged in the UI)
+        void this.identityReady.then(() => {
+          if (this.status === "open") this.sendJoin();
+        });
       }
     });
 
@@ -175,8 +210,9 @@ export class ChannelStore {
             this.error = "replay dropped";
             break;
           }
-          let payload: string;
+          let payload: string = "";
           let ident: MessageIdent | undefined;
+          let ignored = false;
           try {
             const plain = await this.crypto.decrypt(msg.payload);
             // P6: signed inner JSON {t:"msg",...}; legacy raw text passes through untouched
@@ -191,6 +227,12 @@ export class ChannelStore {
                 payload = "⚠️ invalid signature";
                 this.error = "invalid signature";
               }
+            } else if (isUnknownStructuredPayload(plain)) {
+              // structured inner payload from an unknown client version (or a
+              // malformed protocol-internal format): ignore entirely, never
+              // render raw JSON (forward compatibility)
+              if (mid) this.replayCache.add(mid);
+              ignored = true;
             } else {
               payload = plain;
             }
@@ -198,9 +240,39 @@ export class ChannelStore {
             this.error = "decrypt failed (wrong key or corrupted)";
             payload = "⚠️ decrypt failed";
           }
+          if (ignored) break;
           if (mid) this.replayCache.add(mid);
           const ts = Date.now();
           this.messages = [...this.messages, { ...msg, payload, ts, ident }];
+          if (ident && (ident.status === "verified" || ident.status === "conflict")) {
+            // key-change warning (TOFU accepted limitation): announce once per
+            // contested (nick, new fingerprint) pair, then rely on the chips
+            if (ident.status === "conflict") {
+              const key = `${ident.nick}:${ident.fp}`;
+              if (!this.conflictWarned.has(key)) {
+                this.conflictWarned.add(key);
+                this.messages = [
+                  ...this.messages,
+                  {
+                    channelId: msg.channelId,
+                    payload: "",
+                    from: "system",
+                    self: false,
+                    ts,
+                    sys: { sysKind: "identity_conflict", actor: msg.from, nick: ident.nick, fp: ident.fp },
+                  } as ChatMessage,
+                ];
+              }
+            }
+            // one connection presenting two different identity keys is an
+            // impersonation signal (our client never rotates mid-connection)
+            const prevFp = this.fpByConn.get(msg.from);
+            if (prevFp && prevFp !== ident.fp) {
+              this.error = "identity mismatch on connection (possible impersonation)";
+            } else {
+              this.fpByConn.set(msg.from, ident.fp);
+            }
+          }
           break;
         }
         case "key_updated": {
@@ -323,12 +395,11 @@ export class ChannelStore {
   }
 
   /**
-   * Inject the P6 session identity (one keypair per tab, shared by all rooms).
-   * null keeps the unsigned legacy path. selfNick supplies the nick claimed in
-   * signed messages; it is read at send time so later renames apply.
+   * P6: provide the nick claimed in signed messages for this room; read at
+   * send time so later renames apply. The identity itself is generated per
+   * room by the store (cross-room unlinkable).
    */
-  setIdentity(identity: Identity | null, selfNick: () => string = () => "Anonymous"): void {
-    this.identity = identity;
+  setSelfNick(selfNick: () => string): void {
     this.selfNick = selfNick;
   }
 
@@ -379,17 +450,31 @@ export class ChannelStore {
 
   async sendMessage(text: string): Promise<boolean> {
     if (!text.trim()) return false;
+    let inner: string;
+    let midB64: string | null = null;
+    try {
+      const ident = this.identity ?? (await this.identityReady);
+      if (ident) {
+        // P6: sign first (needs the envelope messageId), then encrypt with it preset
+        midB64 = newMessageIdB64();
+        const nick = this.selfNick().trim() || "Anonymous";
+        inner = await wrapSignedMessage(ident, this.channelId, midB64, text, nick);
+      } else {
+        inner = text;
+      }
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+    // keep the 8192 wire limit; enforce the derived plaintext budget here so
+    // oversized input fails with a clear error instead of a generic encode failure
+    if (utf8Length(inner) > MAX_INNER_UTF8) {
+      this.error = `message too long (max ${MAX_INNER_UTF8} UTF-8 bytes)`;
+      return false;
+    }
     let payload = text;
     try {
-      if (this.identity) {
-        // P6: sign first (needs the envelope messageId), then encrypt with it preset
-        const midB64 = newMessageIdB64();
-        const nick = this.selfNick().trim() || "Anonymous";
-        const inner = await wrapSignedMessage(this.identity, this.channelId, midB64, text, nick);
-        payload = await this.crypto.encrypt(inner, { messageIdB64: midB64 });
-      } else {
-        payload = await this.crypto.encrypt(text);
-      }
+      payload = await this.crypto.encrypt(inner, midB64 ? { messageIdB64: midB64 } : undefined);
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
       return false;

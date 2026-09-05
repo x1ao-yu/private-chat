@@ -59,6 +59,8 @@
     const nick = peerNicks.get(`${roomId}:${m.sys.actor}`) ?? m.sys.actor;
     if (m.sys.sysKind === "room_name") return `🏷️ Room name updated to "${m.payload}" by ${nick}`;
     if (m.sys.sysKind === "key_rotation") return `🔑 Key rotated by ${nick}`;
+    if (m.sys.sysKind === "identity_conflict")
+      return `⚠️ Nick "${m.sys.nick}" is now claimed by a different session identity (${m.sys.fp}…) — could be a fresh session identity or impersonation`;
     return m.payload;
   }
   function avatarSrc(m: ChatMessage): string {
@@ -90,6 +92,13 @@
               <span class="h-1.5 w-1.5 rounded-full" style="background:{hashColor(m.ident.fp)}"></span>
               {m.ident.fp}…
             </span>
+          {:else if m.from !== "system"}
+            <span
+              class="shrink-0 rounded-full bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-400"
+              title="Sent without identity signature — unauthenticated (legacy client or identity auth unavailable)"
+            >
+              no identity
+            </span>
           {/if}
           <span class="text-zinc-500">{displayNick(m)}</span>
           <span class="flex gap-2 opacity-0 transition-opacity group-hover:opacity-100">
@@ -118,6 +127,13 @@
                 {#if m.ident.status !== "verified"}⚠️{/if}
                 <span class="h-1.5 w-1.5 rounded-full" style="background:{hashColor(m.ident.fp)}"></span>
                 {m.ident.fp}…
+              </span>
+            {:else if m.from !== "system"}
+              <span
+                class="shrink-0 rounded-full bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-400"
+                title="Sent without identity signature — unauthenticated (legacy client or identity auth unavailable)"
+              >
+                no identity
               </span>
             {/if}
           </div>

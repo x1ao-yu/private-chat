@@ -148,6 +148,24 @@ export async function verifySignedMessage(
   return verifyIdentity(m.pk, m.sig, messageSigData(channelId, messageIdB64, m.nick, m.text));
 }
 
+/**
+ * True when the plaintext is a structured inner payload (JSON object with a
+ * string "t" type tag) that this client cannot interpret as a signed message —
+ * e.g. from a newer client version, or a malformed protocol-internal format.
+ * Callers must ignore such payloads and never render the raw JSON.
+ */
+export function isUnknownStructuredPayload(plain: string): boolean {
+  if (!plain.startsWith("{")) return false;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(plain);
+  } catch {
+    return false;
+  }
+  if (!obj || typeof obj !== "object") return false;
+  return typeof (obj as Record<string, unknown>).t === "string";
+}
+
 // ---- nickname signing ----
 
 /** Canonical signed data for a nick claim: binds the identity to room and nick. */
