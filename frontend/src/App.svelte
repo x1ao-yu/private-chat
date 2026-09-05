@@ -124,8 +124,8 @@
     for (const r of roomHistory) {
       if (!stores.has(r.id)) list.push({ id: r.id, online: r.online, connected: false });
     }
-    // active room first
-    list.sort((a, b) => (a.id === channelId ? -1 : b.id === channelId ? 1 : 0));
+    // stable order (join order): the active room is highlighted in place via
+    // activeId, never reordered to the top — switching rooms must not reshuffle
     return list;
   });
 
