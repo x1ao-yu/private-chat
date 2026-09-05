@@ -1,8 +1,13 @@
 // e2ee.ts — E2EE boundary, Web Crypto AES-GCM
 // P2: 12B IV per message never reused (getRandomValues), 16B messageId per message, AAD = v1|channelId|messageId
 
+export interface EncryptOptions {
+  /** pre-set message id (base64url, 16 bytes) — for plaintexts that must bind to it (P6 identity signatures) */
+  messageIdB64?: string;
+}
+
 export interface Crypto {
-  encrypt(plain: string): Promise<string>;
+  encrypt(plain: string, opts?: EncryptOptions): Promise<string>;
   decrypt(cipher: string): Promise<string>;
 }
 
@@ -105,6 +110,15 @@ function base64UrlDecode(s: string): Uint8Array {
   return bytes;
 }
 
+export { base64UrlEncode, base64UrlDecode };
+
+/** Fresh 16-byte message id as base64url — lets callers bind a signature to the envelope id (P6). */
+export function newMessageIdB64(): string {
+  const messageId = new Uint8Array(16);
+  crypto.getRandomValues(messageId);
+  return base64UrlEncode(messageId);
+}
+
 export async function generateRoomKey(): Promise<CryptoKey> {
   if (!isCryptoAvailable()) throw new Error("Web Crypto not available (need HTTPS or localhost)");
   return crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
@@ -144,13 +158,21 @@ export function createAesGcmCrypto(key: CryptoKey, channelId: string): Crypto {
   const dec = new TextDecoder();
 
   return {
-    async encrypt(plain: string): Promise<string> {
+    async encrypt(plain: string, opts?: EncryptOptions): Promise<string> {
       if (!isCryptoAvailable()) throw new Error("Web Crypto not available");
       const iv = new Uint8Array(12);
       crypto.getRandomValues(iv);
-      const messageId = new Uint8Array(16);
-      crypto.getRandomValues(messageId);
-      const messageIdB64 = base64UrlEncode(messageId);
+      let messageIdB64: string;
+      if (opts?.messageIdB64 !== undefined) {
+        if (!B64URL_RE.test(opts.messageIdB64)) throw new Error("invalid preset messageIdB64");
+        const mid = base64UrlDecode(opts.messageIdB64);
+        if (mid.length !== 16) throw new Error("invalid preset messageIdB64 length");
+        messageIdB64 = opts.messageIdB64;
+      } else {
+        const messageId = new Uint8Array(16);
+        crypto.getRandomValues(messageId);
+        messageIdB64 = base64UrlEncode(messageId);
+      }
       const aad = enc.encode(`v1|${channelId}|${messageIdB64}`);
       const ctBuffer = await crypto.subtle.encrypt(
         { name: "AES-GCM", iv: iv as BufferSource, additionalData: aad as BufferSource, tagLength: 128 },
@@ -243,7 +265,15 @@ export async function wrapNick(crypto: Crypto, nick: string): Promise<string> {
   const plain = JSON.stringify({ t: "nick", v: 1, nick: n });
   return crypto.encrypt(plain);
 }
-export async function unwrapNick(crypto: Crypto, payload: string): Promise<string> {
+export type UnwrappedNick = {
+  nick: string;
+  /** identity public key (43-char base64url) when the claim is signed, else null (legacy client) */
+  pk: string | null;
+  /** Ed25519 signature (base64url) over "identity-v1|nick|<channelId>|<nick>", else null */
+  sig: string | null;
+};
+
+export async function unwrapNick(crypto: Crypto, payload: string): Promise<UnwrappedNick> {
   const plain = await crypto.decrypt(payload);
   let obj: unknown;
   try {
@@ -252,9 +282,13 @@ export async function unwrapNick(crypto: Crypto, payload: string): Promise<strin
     throw new Error("invalid nick payload");
   }
   if (!obj || typeof obj !== "object") throw new Error("invalid nick payload");
-  const o = obj as { t?: unknown; v?: unknown; nick?: unknown };
+  const o = obj as { t?: unknown; v?: unknown; nick?: unknown; pk?: unknown; sig?: unknown };
   if (o.t !== "nick" || o.v !== 1 || typeof o.nick !== "string" || !isValidNick(o.nick)) {
     throw new Error("invalid nick fields");
   }
-  return o.nick.trim();
+  // pk has the same 32-byte / 43-char base64url shape as a room key; malformed
+  // identity fields are normalized to null (the caller treats that as unsigned)
+  const pk = typeof o.pk === "string" && isRoomKeyB64(o.pk) ? o.pk : null;
+  const sig = typeof o.sig === "string" && B64URL_RE.test(o.sig) ? o.sig : null;
+  return { nick: o.nick.trim(), pk, sig };
 }

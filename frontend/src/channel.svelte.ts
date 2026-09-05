@@ -6,6 +6,7 @@ import {
   type Crypto,
   isValidEnvelope,
   extractMessageIdB64,
+  newMessageIdB64,
   ReplayCache,
   unwrapNewKey,
   unwrapRoomName,
@@ -13,6 +14,14 @@ import {
   createAesGcmCrypto,
   importRoomKey,
 } from "./e2ee.ts";
+import {
+  fpOf,
+  parseSignedMessage,
+  verifySignedMessage,
+  verifySignedNick,
+  wrapSignedMessage,
+  type Identity,
+} from "./identity.ts";
 import type { BroadcastMessage } from "./protocol.gen.ts";
 
 function getWsUrl(): string {
@@ -79,10 +88,21 @@ export async function createChannel(): Promise<string> {
   });
 }
 
+/** Identity state of a signed message after receive-side verification (P6, per-room TOFU). */
+export type IdentStatus = "verified" | "invalid" | "conflict";
+export type MessageIdent = {
+  fp: string;
+  nick?: string;
+  pk?: string;
+  status: IdentStatus;
+};
+
 export type ChatMessage = BroadcastMessage & {
   ts: number;
   /** structured system message; nick is resolved at render time (echoes arrive after the frame) */
   sys?: { sysKind: "room_name" | "key_rotation"; actor: string };
+  /** present when the sender signed the message with their session identity */
+  ident?: MessageIdent;
 };
 
 export type ChannelStoreOptions = {
@@ -104,6 +124,12 @@ export class ChannelStore {
   private unsubStatus: (() => void) | null = null;
   private replayCache = new ReplayCache(1000);
   private lastRoomName: string | null = null;
+  // P6 session identity (optional): null keeps the unsigned legacy path
+  private identity: Identity | null = null;
+  private selfNick: () => string = () => "Anonymous";
+  // TOFU pinning, per room, tab memory: first verified claim of a nick wins;
+  // the same nick from a different identity is flagged as a conflict
+  private nickToFp = new Map<string, string>();
   private onKeyRotated?: (newKeyB64: string, newCrypto: Crypto) => void;
   private onRoomNameUpdated?: (name: string, from: string) => void;
   private onNicknameUpdated?: (from: string, nick: string) => void;
@@ -150,15 +176,31 @@ export class ChannelStore {
             break;
           }
           let payload: string;
+          let ident: MessageIdent | undefined;
           try {
-            payload = await this.crypto.decrypt(msg.payload);
+            const plain = await this.crypto.decrypt(msg.payload);
+            // P6: signed inner JSON {t:"msg",...}; legacy raw text passes through untouched
+            const parsed = parseSignedMessage(plain);
+            if (parsed) {
+              if (await verifySignedMessage(this.channelId, mid ?? "", parsed)) {
+                ident = this.recordIdentity(parsed);
+                payload = parsed.text;
+              } else {
+                // unauthenticated content is not rendered (same policy as decrypt failed)
+                ident = { fp: fpOf(parsed.pk), nick: parsed.nick, pk: parsed.pk, status: "invalid" };
+                payload = "⚠️ invalid signature";
+                this.error = "invalid signature";
+              }
+            } else {
+              payload = plain;
+            }
           } catch {
             this.error = "decrypt failed (wrong key or corrupted)";
             payload = "⚠️ decrypt failed";
           }
           if (mid) this.replayCache.add(mid);
           const ts = Date.now();
-          this.messages = [...this.messages, { ...msg, payload, ts }];
+          this.messages = [...this.messages, { ...msg, payload, ts, ident }];
           break;
         }
         case "key_updated": {
@@ -241,8 +283,15 @@ export class ChannelStore {
             break;
           }
           try {
-            const nick = await unwrapNick(this.crypto, msg.payload);
+            const { nick, pk, sig } = await unwrapNick(this.crypto, msg.payload);
             if (mid) this.replayCache.add(mid);
+            // P6: a signed nick claim must verify; an invalid one is dropped
+            // (unsigned claims still pass through for legacy clients)
+            if (pk && sig && !(await verifySignedNick(this.channelId, nick, pk, sig))) {
+              this.error = "invalid signature (nick)";
+              break;
+            }
+            if (pk && sig) this.recordIdentity({ nick, pk });
             this.onNicknameUpdated?.(msg.from, nick);
             this.error = null;
           } catch {
@@ -271,6 +320,29 @@ export class ChannelStore {
   updateCrypto(crypto: Crypto): void {
     this.crypto = crypto;
     this.replayCache.clear();
+  }
+
+  /**
+   * Inject the P6 session identity (one keypair per tab, shared by all rooms).
+   * null keeps the unsigned legacy path. selfNick supplies the nick claimed in
+   * signed messages; it is read at send time so later renames apply.
+   */
+  setIdentity(identity: Identity | null, selfNick: () => string = () => "Anonymous"): void {
+    this.identity = identity;
+    this.selfNick = selfNick;
+  }
+
+  /** Register a verified signed claim and compute the display identity state (per-room TOFU). */
+  private recordIdentity(m: { nick: string; pk: string }): MessageIdent {
+    const fp = fpOf(m.pk);
+    const ident: MessageIdent = { fp, nick: m.nick, pk: m.pk, status: "verified" };
+    const owner = this.nickToFp.get(m.nick);
+    if (owner && owner !== fp) {
+      ident.status = "conflict";
+    } else {
+      if (!owner) this.nickToFp.set(m.nick, fp);
+    }
+    return ident;
   }
 
   connect(): void {
@@ -309,7 +381,15 @@ export class ChannelStore {
     if (!text.trim()) return false;
     let payload = text;
     try {
-      payload = await this.crypto.encrypt(text);
+      if (this.identity) {
+        // P6: sign first (needs the envelope messageId), then encrypt with it preset
+        const midB64 = newMessageIdB64();
+        const nick = this.selfNick().trim() || "Anonymous";
+        const inner = await wrapSignedMessage(this.identity, this.channelId, midB64, text, nick);
+        payload = await this.crypto.encrypt(inner, { messageIdB64: midB64 });
+      } else {
+        payload = await this.crypto.encrypt(text);
+      }
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
       return false;

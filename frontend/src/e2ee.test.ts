@@ -363,11 +363,11 @@ describe("room name wrap/unwrap", () => {
 });
 
 describe("nick wrap/unwrap", () => {
-  it("round-trip trims surrounding whitespace", async () => {
+  it("round-trip trims surrounding whitespace (unsigned legacy shape)", async () => {
     const crypto = createAesGcmCrypto(await generateRoomKey(), "room-nick1");
     const wrapped = await wrapNick(crypto, "  alice  ");
     expect(isValidEnvelope(wrapped)).toBe(true);
-    await expect(unwrapNick(crypto, wrapped)).resolves.toBe("alice");
+    await expect(unwrapNick(crypto, wrapped)).resolves.toEqual({ nick: "alice", pk: null, sig: null });
   });
 
   it("isValidNick boundaries", () => {

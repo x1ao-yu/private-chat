@@ -7,11 +7,13 @@ import {
   generateRoomKey,
   importRoomKey,
   importRoomKeyRaw,
+  newMessageIdB64,
   wrapNewKey,
   wrapNick,
   wrapRoomName,
   type Crypto,
 } from "./e2ee.ts";
+import { generateIdentity, wrapSignedMessage, wrapSignedNick, type Identity } from "./identity.ts";
 
 // flush pending async work (decrypt/unwrap chains span several task turns)
 const tick = () => new Promise<void>((r) => setTimeout(r, 25));
@@ -315,8 +317,7 @@ describe("ChannelStore", () => {
     expect(store.error).toBeTruthy();
   });
 
-  it("two stores operate independently (multi-room)", async () => {
-    const cryptoA = createAesGcmCrypto(await importRoomKeyRaw(crypto.getRandomValues(new Uint8Array(32))), "room-a");
+  it("two stores operate independently (multi-room)", async () => {    const cryptoA = createAesGcmCrypto(await importRoomKeyRaw(crypto.getRandomValues(new Uint8Array(32))), "room-a");
     const cryptoB = createAesGcmCrypto(await importRoomKeyRaw(crypto.getRandomValues(new Uint8Array(32))), "room-b");
     const sA = new ChannelStore("room-a", cryptoA);
     const sB = new ChannelStore("room-b", cryptoB);
@@ -351,5 +352,170 @@ describe("ChannelStore", () => {
     expect(frameB.channelId).toBe("room-b");
     sA.disconnect();
     sB.disconnect();
+  });
+});
+
+describe("identity: signed messages (P6)", () => {
+  let restoreWS: () => void;
+  beforeEach(() => {
+    restoreWS = installMockWS();
+  });
+  afterEach(() => {
+    restoreWS();
+  });
+
+  /** Simulate a server message frame whose inner plaintext is signed by a peer identity. */
+  async function peerSignedFrame(
+    crypto: Crypto,
+    peer: Identity,
+    text: string,
+    nick: string,
+    mid = newMessageIdB64(),
+  ): Promise<string> {
+    const inner = await wrapSignedMessage(peer, CH, mid, text, nick);
+    return msgFrame(CH, await crypto.encrypt(inner, { messageIdB64: mid }));
+  }
+
+  it("sendMessage signs the inner payload and binds the envelope messageId", async () => {
+    const crypto = await makeCrypto();
+    const identity = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    store.setIdentity(identity, () => "self-nick");
+    await store.sendMessage("signed hello");
+    const frame = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(frame.type).toBe("send_message");
+    const inner = JSON.parse(await crypto.decrypt(frame.payload)) as {
+      t: string; v: number; text: string; nick: string; pk: string; sig: string;
+    };
+    expect(inner.t).toBe("msg");
+    expect(inner.v).toBe(1);
+    expect(inner.text).toBe("signed hello");
+    expect(inner.nick).toBe("self-nick");
+    expect(inner.pk).toBe(identity.pubB64);
+    // the envelope carries exactly the pre-set messageId the signature covers
+    expect(frame.payload.split(".")[1]).toBeTruthy();
+    store.disconnect();
+  });
+
+  it("sendMessage falls back to the unsigned legacy path without identity", async () => {
+    const crypto = await makeCrypto();
+    const { store, ws } = await openStore(CH, crypto);
+    await store.sendMessage("legacy hello");
+    const frame = JSON.parse(ws.sent[ws.sent.length - 1]);
+    expect(await crypto.decrypt(frame.payload)).toBe("legacy hello");
+    store.disconnect();
+  });
+
+  it("verifies an incoming signed message and attaches ident", async () => {
+    const crypto = await makeCrypto();
+    const peer = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    ws.simulateMessage(await peerSignedFrame(crypto, peer, "from peer", "alice"));
+    await tick();
+    expect(store.messages).toHaveLength(1);
+    const m = store.messages[0];
+    expect(m.payload).toBe("from peer");
+    expect(m.ident?.status).toBe("verified");
+    expect(m.ident?.fp).toBe(peer.fp);
+    expect(m.ident?.nick).toBe("alice");
+    expect(m.ident?.pk).toBe(peer.pubB64);
+    expect(store.error).toBeNull();
+    store.disconnect();
+  });
+
+  it("shows a placeholder and hides content when the signature is invalid", async () => {
+    const crypto = await makeCrypto();
+    const peer = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    // sign one text, then swap the text after signing (forgery attempt)
+    const mid = newMessageIdB64();
+    const inner = await wrapSignedMessage(peer, CH, mid, "honest", "alice");
+    const forged = JSON.stringify({ ...JSON.parse(inner), text: "evil" });
+    ws.simulateMessage(msgFrame(CH, await crypto.encrypt(forged, { messageIdB64: mid })));
+    await tick();
+    const m = store.messages[0];
+    expect(m.payload).toBe("⚠️ invalid signature");
+    expect(m.ident?.status).toBe("invalid");
+    expect(store.error).toBe("invalid signature");
+    store.disconnect();
+  });
+
+  it("renders legacy unsigned plaintexts without ident", async () => {
+    const crypto = await makeCrypto();
+    const { store, ws } = await openStore(CH, crypto);
+    ws.simulateMessage(msgFrame(CH, await crypto.encrypt("old client here")));
+    await tick();
+    expect(store.messages[0].payload).toBe("old client here");
+    expect(store.messages[0].ident).toBeUndefined();
+    store.disconnect();
+  });
+
+  it("flags a nick conflict when a second identity claims the same nick", async () => {
+    const crypto = await makeCrypto();
+    const alice = await generateIdentity();
+    const mallory = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    ws.simulateMessage(await peerSignedFrame(crypto, alice, "hi", "alice"));
+    await tick();
+    expect(store.messages[0].ident?.status).toBe("verified");
+    ws.simulateMessage(await peerSignedFrame(crypto, mallory, "me too", "alice"));
+    await tick();
+    expect(store.messages[1].ident?.status).toBe("conflict");
+    // the original claimant stays verified
+    ws.simulateMessage(await peerSignedFrame(crypto, alice, "still me", "alice"));
+    await tick();
+    expect(store.messages[2].ident?.status).toBe("verified");
+    store.disconnect();
+  });
+
+  it("verifies the sender's own echo with the session identity", async () => {
+    const crypto = await makeCrypto();
+    const identity = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    store.setIdentity(identity, () => "self-nick");
+    await store.sendMessage("echo me");
+    const frame = JSON.parse(ws.sent[ws.sent.length - 1]);
+    ws.simulateMessage(
+      JSON.stringify({ type: "message", channelId: CH, payload: frame.payload, from: "peer-self", self: true }),
+    );
+    await tick();
+    const m = store.messages.find((x) => x.self === true);
+    expect(m?.ident?.status).toBe("verified");
+    expect(m?.payload).toBe("echo me");
+    store.disconnect();
+  });
+
+  it("handles signed nickname updates; drops forged ones", async () => {
+    const crypto = await makeCrypto();
+    const peer = await generateIdentity();
+    const onNicknameUpdated = vi.fn();
+    const { store, ws } = await openStore(CH, crypto, { onNicknameUpdated });
+
+    const good = await wrapSignedNick(peer, CH, "carol");
+    ws.simulateMessage(updatedFrame("nickname_updated", CH, await crypto.encrypt(good), "peer-n1"));
+    await tick();
+    expect(onNicknameUpdated).toHaveBeenCalledWith("peer-n1", "carol");
+    expect(store.error).toBeNull();
+
+    // signed by a real key but the nick was swapped after signing -> forgery dropped
+    const evil = await generateIdentity();
+    const inner = JSON.parse(await wrapSignedNick(evil, CH, "mallory")) as Record<string, unknown>;
+    inner.nick = "carol"; // signature was computed over "mallory"
+    ws.simulateMessage(updatedFrame("nickname_updated", CH, await crypto.encrypt(JSON.stringify(inner)), "peer-n2"));
+    await tick();
+    expect(onNicknameUpdated).toHaveBeenCalledTimes(1);
+    expect(store.error).toBe("invalid signature (nick)");
+    store.disconnect();
+  });
+
+  it("keeps the unsigned nickname path for legacy clients", async () => {
+    const crypto = await makeCrypto();
+    const onNicknameUpdated = vi.fn();
+    const { store, ws } = await openStore(CH, crypto, { onNicknameUpdated });
+    ws.simulateMessage(updatedFrame("nickname_updated", CH, await wrapNick(crypto, "oldnick"), "peer-old"));
+    await tick();
+    expect(onNicknameUpdated).toHaveBeenCalledWith("peer-old", "oldnick");
+    expect(store.error).toBeNull();
+    store.disconnect();
   });
 });
