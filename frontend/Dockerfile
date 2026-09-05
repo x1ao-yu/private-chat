@@ -1,8 +1,10 @@
 # Frontend — optional deployment (unprivileged nginx, listens on 8080)
-FROM node:20-alpine AS builder
+# Node 24 matches CI; pnpm is pinned to the same version as local dev
+# (corepack's floating default resolved to pnpm 11, which needs a newer Node)
+FROM node:24-alpine AS builder
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN corepack enable && pnpm install --frozen-lockfile
+RUN npm install -g pnpm@10.30.1 && pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
 
