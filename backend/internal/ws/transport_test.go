@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -676,5 +677,41 @@ func TestRejoinAfterLeave(t *testing.T) {
 	}
 	if joined.Type != protocol.JoinedTypeJoined || joined.Online != 1 {
 		t.Fatalf("expected joined(1) after rejoin, got %+v", joined)
+	}
+}
+
+// TestOriginVerification pins the CSWSH defence: the handler must refuse a
+// handshake whose Origin does not match the request Host, and accept one that
+// does. Browser clients always connect to their own origin, so this cannot be
+// re-enabled by loosening the check.
+func TestOriginVerification(t *testing.T) {
+	rawURL, closeFn := newTestServer(t)
+	defer closeFn()
+
+	dial := func(origin string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		h := http.Header{}
+		if origin != "" {
+			h.Set("Origin", origin)
+		}
+		c, _, err := websocket.Dial(ctx, rawURL, &websocket.DialOptions{HTTPHeader: h})
+		if err == nil {
+			c.Close(websocket.StatusNormalClosure, "")
+		}
+		return err
+	}
+
+	host := strings.TrimPrefix(strings.TrimPrefix(rawURL, "ws://"), "wss://")
+
+	if err := dial("http://evil.example"); err == nil {
+		t.Fatal("expected handshake from a foreign origin to be rejected")
+	}
+	if err := dial("http://" + host); err != nil {
+		t.Fatalf("expected same-origin handshake to be accepted: %v", err)
+	}
+	// non-browser clients send no Origin; those stay allowed
+	if err := dial(""); err != nil {
+		t.Fatalf("expected origin-less handshake to be accepted: %v", err)
 	}
 }

@@ -28,12 +28,14 @@ func NewServer(m *channel.Manager) *Server {
 
 // Handler upgrades and handles a WS connection. It validates via codec, routes via channel manager,
 // and never logs payload. Leave authority is WS lifecycle + native Ping/Pong heartbeat.
+// Origin is verified by the websocket library against the request Host (CSRF/CSWSH defence);
+// clients connect to their own origin, and nginx must therefore forward the original Host
+// including any port (see frontend/nginx.conf).
 func (s *Server) Handler(w http.ResponseWriter, r *http.Request) {
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: true,
-	})
+	c, err := websocket.Accept(w, r, nil)
 	if err != nil {
-		http.Error(w, "websocket accept failed", http.StatusBadRequest)
+		// Accept has already written the response for every failure path; writing
+		// again would trigger a superfluous WriteHeader on each rejected handshake.
 		return
 	}
 	defer func() {
