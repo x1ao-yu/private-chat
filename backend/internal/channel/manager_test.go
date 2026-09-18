@@ -1,11 +1,20 @@
 package channel
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+func mustJoin(t *testing.T, m *Manager, channelID string, conn *websocket.Conn, clientID string) {
+	t.Helper()
+	if got := m.JoinIfRoom(channelID, conn, clientID, 0); got != JoinOK {
+		t.Fatalf("JoinIfRoom(%s) = %v, want JoinOK", channelID, got)
+	}
+}
 
 func TestExpireEmptyTTL(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -42,7 +51,8 @@ func TestExpireIdleTTL(t *testing.T) {
 
 	// simulate a channel with a member (use nil conn as placeholder - allowed for map key)
 	var conn websocket.Conn
-	m.Join("active1", &conn, "peer-1")
+	m.Create("active1")
+	mustJoin(t, m, "active1", &conn, "peer-1")
 	// 23h: not expired even though not empty, because idle TTL is 24h
 	now = base.Add(23 * time.Hour)
 	if expired := m.Expire(now); len(expired) != 0 {
@@ -72,7 +82,7 @@ func TestJoinRefreshesTTL(t *testing.T) {
 	// 9m later, join
 	now = base.Add(9 * time.Minute)
 	var conn websocket.Conn
-	m.Join("refresh1", &conn, "peer-1")
+	mustJoin(t, m, "refresh1", &conn, "peer-1")
 	// 15m from start (6m since join): empty would have expired but now has member and refreshed
 	now = base.Add(15 * time.Minute)
 	if expired := m.Expire(now); len(expired) != 0 {
@@ -146,7 +156,7 @@ func TestLeaveKeepsEmptyChannel(t *testing.T) {
 	m := NewWithNow(func() time.Time { return now })
 	var conn websocket.Conn
 	m.Create("keep1")
-	m.Join("keep1", &conn, "peer-1")
+	mustJoin(t, m, "keep1", &conn, "peer-1")
 	m.Leave("keep1", &conn)
 	if !m.Exists("keep1") {
 		t.Fatal("channel should survive last member leaving (rejoin window)")
@@ -171,8 +181,8 @@ func TestLeaveAllKeepsEmptyChannel(t *testing.T) {
 	m := NewWithNow(func() time.Time { return now })
 	var c1, c2 websocket.Conn
 	m.Create("keep2")
-	m.Join("keep2", &c1, "peer-1")
-	m.Join("keep2", &c2, "peer-2")
+	mustJoin(t, m, "keep2", &c1, "peer-1")
+	mustJoin(t, m, "keep2", &c2, "peer-2")
 	m.LeaveAll(&c1)
 	m.LeaveAll(&c2)
 	if !m.Exists("keep2") {
@@ -193,11 +203,61 @@ func TestRejoinAfterLeave(t *testing.T) {
 	m := NewWithNow(func() time.Time { return now })
 	var c1, c2 websocket.Conn
 	m.Create("rejoin1")
-	m.Join("rejoin1", &c1, "peer-1")
+	mustJoin(t, m, "rejoin1", &c1, "peer-1")
 	m.Leave("rejoin1", &c1)
 	// a new connection joins within the EmptyTTL window -> channel resurrects
-	m.Join("rejoin1", &c2, "peer-2")
+	mustJoin(t, m, "rejoin1", &c2, "peer-2")
 	if m.Count("rejoin1") != 1 {
 		t.Fatalf("expected count 1 after rejoin, got %d", m.Count("rejoin1"))
+	}
+}
+
+func TestJoinIfRoomRefusals(t *testing.T) {
+	m := New()
+	var conn websocket.Conn
+
+	// joining a missing channel must not create it
+	if got := m.JoinIfRoom("ghost", &conn, "peer-1", 0); got != JoinNotFound {
+		t.Fatalf("missing channel: got %v, want JoinNotFound", got)
+	}
+	if m.Exists("ghost") {
+		t.Fatal("join must never bring a channel into existence")
+	}
+
+	m.Create("small")
+	mustJoin(t, m, "small", &conn, "peer-1")
+	var second websocket.Conn
+	if got := m.JoinIfRoom("small", &second, "peer-2", 1); got != JoinFull {
+		t.Fatalf("at capacity: got %v, want JoinFull", got)
+	}
+	// the refused join left no trace
+	if m.Count("small") != 1 {
+		t.Fatalf("refused join changed count: %d", m.Count("small"))
+	}
+}
+
+// TestJoinIfRoomEnforcesCapacityConcurrently pins the check-then-act fix: with a
+// separate Count check, concurrent joins each observe a free slot and together
+// overshoot the limit.
+func TestJoinIfRoomEnforcesCapacityConcurrently(t *testing.T) {
+	m := New()
+	m.Create("race")
+
+	const limit = 100
+	const attempts = 400
+	conns := make([]websocket.Conn, attempts)
+
+	var wg sync.WaitGroup
+	wg.Add(attempts)
+	for i := 0; i < attempts; i++ {
+		go func(i int) {
+			defer wg.Done()
+			m.JoinIfRoom("race", &conns[i], fmt.Sprintf("peer-%d", i), limit)
+		}(i)
+	}
+	wg.Wait()
+
+	if got := m.Count("race"); got != limit {
+		t.Fatalf("capacity overshoot: got %d members, want exactly %d", got, limit)
 	}
 }

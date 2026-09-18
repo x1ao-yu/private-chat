@@ -10,17 +10,30 @@ import (
 type Limiter struct {
 	mu      sync.Mutex
 	windows map[string]*window
+	now     func() time.Time
 }
 
 type window struct {
 	count int
 	start time.Time
+	// dur is the window this key was created with, so GC can tell a 1-minute
+	// counter from a 1-hour one instead of assuming a single expiry age.
+	dur time.Duration
 }
 
 // NewLimiter creates a Limiter.
 func NewLimiter() *Limiter {
+	return NewLimiterWithNow(nil)
+}
+
+// NewLimiterWithNow creates a Limiter with a custom time source (for tests).
+func NewLimiterWithNow(now func() time.Time) *Limiter {
+	if now == nil {
+		now = time.Now
+	}
 	return &Limiter{
 		windows: make(map[string]*window),
+		now:     now,
 	}
 }
 
@@ -30,15 +43,16 @@ func NewLimiter() *Limiter {
 func (l *Limiter) Allow(key string, limit int, dur time.Duration) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
+	now := l.now()
 	w, ok := l.windows[key]
 	if !ok {
-		l.windows[key] = &window{count: 1, start: now}
+		l.windows[key] = &window{count: 1, start: now, dur: dur}
 		return true
 	}
 	if now.Sub(w.start) > dur {
 		w.start = now
 		w.count = 1
+		w.dur = dur
 		return true
 	}
 	if w.count >= limit {
@@ -61,13 +75,16 @@ func (l *Limiter) CleanupConn(connKey string) {
 	}
 }
 
-// CleanupExpired removes IP windows older than 60s (lazy GC to avoid unbounded growth).
+// CleanupExpired drops windows that have run past their own duration. A single
+// fixed age would be wrong here: the hourly per-IP create budget must survive
+// far longer than the one-minute counters, and deleting it early silently
+// restores that limit to roughly one-per-minute.
 func (l *Limiter) CleanupExpired() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	now := time.Now()
+	now := l.now()
 	for k, w := range l.windows {
-		if now.Sub(w.start) > 60*time.Second {
+		if now.Sub(w.start) > w.dur {
 			delete(l.windows, k)
 		}
 	}

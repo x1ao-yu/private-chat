@@ -7,6 +7,13 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     restart: unless-stopped
+    # The only ingress is the frontend nginx, which appends the real client
+    # address to X-Forwarded-For. Without this the limiter would key every client
+    # on nginx's container address and per-IP limits would become global.
+    # Never enable this when the backend is directly reachable: clients could
+    # then forge the header to escape their own rate-limit bucket.
+    environment:
+      - TRUST_PROXY_XFF=true
     # internal only: the frontend nginx proxies /ws and /health (least exposure).
     # to inspect the backend directly, temporarily add "8080:8080" under ports.
   frontend:

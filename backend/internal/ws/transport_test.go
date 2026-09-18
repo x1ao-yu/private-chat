@@ -17,8 +17,14 @@ import (
 
 func newTestServer(t *testing.T) (string, func()) {
 	t.Helper()
+	return newTestServerWithXFF(t, false)
+}
+
+func newTestServerWithXFF(t *testing.T, trustXFF bool) (string, func()) {
+	t.Helper()
 	m := channel.New()
 	srv := NewServer(m)
+	srv.trustXFF = trustXFF
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", srv.Handler)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -30,6 +36,84 @@ func newTestServer(t *testing.T) (string, func()) {
 	return "ws://" + ln.Addr().String() + "/ws", func() {
 		httpSrv.Close()
 		ln.Close()
+	}
+}
+
+// createOnce dials with the given X-Forwarded-For and attempts one create_channel,
+// reporting whether the server accepted it.
+func createOnce(t *testing.T, url, xff string) bool {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h := http.Header{}
+	if xff != "" {
+		h.Set("X-Forwarded-For", xff)
+	}
+	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: h})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"create_channel"}`)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, data, err := c.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	// a local struct, not protocol.Error: the generated types enforce required
+	// fields, so unmarshalling a successful channel_created into them fails
+	var msg struct {
+		Type string `json:"type"`
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v data %s", err, data)
+	}
+	return msg.Type != "error" || msg.Code != "rate_limited"
+}
+
+// TestCreateRateLimitPerClientIP pins that the limiter buckets by the real client
+// address rather than the proxy's. Five creates exhaust one IP's per-minute
+// budget; a second connection from that same IP must be refused, while a
+// different client IP is unaffected.
+func TestCreateRateLimitPerClientIP(t *testing.T) {
+	url, closeFn := newTestServerWithXFF(t, true)
+	defer closeFn()
+
+	for i := 0; i < 5; i++ {
+		if !createOnce(t, url, "203.0.113.1") {
+			t.Fatalf("create %d should be allowed within the 5/min budget", i+1)
+		}
+	}
+	if createOnce(t, url, "203.0.113.1") {
+		t.Fatal("6th create from the same client IP should be rate limited")
+	}
+	// a distinct client IP gets its own budget even though the peer address is shared
+	if !createOnce(t, url, "203.0.113.2") {
+		t.Fatal("a different client IP must not inherit the exhausted budget")
+	}
+	// only the right-most entry counts, so prepending cannot buy a fresh bucket
+	if createOnce(t, url, "198.51.100.77, 203.0.113.1") {
+		t.Fatal("prepending a novel XFF hop must not escape the bucket of the real client")
+	}
+}
+
+// TestCreateRateLimitIgnoresXFFWhenNotTrusted pins the safe default: with
+// TRUST_PROXY_XFF unset a directly reachable backend must key on the peer
+// address, so spoofing X-Forwarded-For buys no extra budget.
+func TestCreateRateLimitIgnoresXFFWhenNotTrusted(t *testing.T) {
+	url, closeFn := newTestServer(t)
+	defer closeFn()
+
+	for i := 0; i < 5; i++ {
+		if !createOnce(t, url, "") {
+			t.Fatalf("create %d should be allowed within the 5/min budget", i+1)
+		}
+	}
+	// same peer address, forged header: still the same bucket
+	if createOnce(t, url, "198.51.100.99") {
+		t.Fatal("forged X-Forwarded-For must not bypass the limit when the proxy is not trusted")
 	}
 }
 
@@ -713,5 +797,45 @@ func TestOriginVerification(t *testing.T) {
 	// non-browser clients send no Origin; those stay allowed
 	if err := dial(""); err != nil {
 		t.Fatalf("expected origin-less handshake to be accepted: %v", err)
+	}
+}
+
+// TestClientIP pins which address the rate limiter buckets a client under. With
+// TRUST_PROXY_XFF unset the peer address wins even when a client supplies
+// X-Forwarded-For; with it set, only the right-most XFF entry — the one the
+// trusted proxy appended — is believed, so a client cannot pick its own bucket.
+func TestClientIP(t *testing.T) {
+	newReq := func(remoteAddr, xff string) *http.Request {
+		r := &http.Request{RemoteAddr: remoteAddr, Header: http.Header{}}
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	direct := &Server{}                 // default: never believe client headers
+	behindProxy := &Server{trustXFF: true}
+
+	tests := []struct {
+		name string
+		srv  *Server
+		req  *http.Request
+		want string
+	}{
+		{"peer address when no XFF", behindProxy, newReq("203.0.113.7:5555", ""), "203.0.113.7"},
+		{"XFF ignored when not trusted", direct, newReq("203.0.113.7:5555", "198.51.100.9"), "203.0.113.7"},
+		{"single hop", behindProxy, newReq("10.0.0.2:5555", "203.0.113.7"), "203.0.113.7"},
+		{"right-most hop wins", behindProxy, newReq("10.0.0.2:5555", "1.1.1.1, 203.0.113.7"), "203.0.113.7"},
+		{"prepending cannot forge a bucket", behindProxy, newReq("10.0.0.2:5555", "1.1.1.1, 1.1.1.2, 203.0.113.7"), "203.0.113.7"},
+		{"unparseable XFF falls back to peer", behindProxy, newReq("10.0.0.2:5555", "not-an-ip"), "10.0.0.2"},
+		{"blank last entry falls back to peer", behindProxy, newReq("10.0.0.2:5555", "203.0.113.7, "), "10.0.0.2"},
+		{"ipv6 peer", behindProxy, newReq("[2001:db8::1]:5555", ""), "2001:db8::1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.srv.clientIP(tc.req); got != tc.want {
+				t.Fatalf("clientIP = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

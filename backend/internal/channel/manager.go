@@ -70,19 +70,34 @@ func (m *Manager) Create(channelID string) {
 	}
 }
 
-// Join adds conn to channel with clientID.
-func (m *Manager) Join(channelID string, conn *websocket.Conn, clientID string) {
+// JoinResult is the outcome of Manager.JoinIfRoom.
+type JoinResult int
+
+const (
+	// JoinOK means the connection joined the channel.
+	JoinOK JoinResult = iota
+	// JoinNotFound means the channel does not exist; joining never creates one.
+	JoinNotFound
+	// JoinFull means the channel already holds the maximum number of members.
+	JoinFull
+)
+
+// JoinIfRoom adds conn to an existing channel, refusing if the channel is gone
+// or already holds max members (max <= 0 means unlimited).
+//
+// Checking and mutating happen under one write lock on purpose: an unguarded
+// Count-then-Join lets concurrent joins each pass the capacity check and
+// collectively overshoot max. Channels are not auto-created here; Create is the
+// only path that brings one into existence.
+func (m *Manager) JoinIfRoom(channelID string, conn *websocket.Conn, clientID string, max int) JoinResult {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	info, ok := m.channels[channelID]
 	if !ok {
-		now := m.now()
-		info = &channelInfo{
-			conns:      make(map[*websocket.Conn]string),
-			createdAt:  now,
-			lastActive: now,
-		}
-		m.channels[channelID] = info
+		return JoinNotFound
+	}
+	if max > 0 && len(info.conns) >= max {
+		return JoinFull
 	}
 	info.conns[conn] = clientID
 	info.lastActive = m.now()
@@ -90,6 +105,7 @@ func (m *Manager) Join(channelID string, conn *websocket.Conn, clientID string) 
 		m.connChannels[conn] = make(map[string]struct{})
 	}
 	m.connChannels[conn][channelID] = struct{}{}
+	return JoinOK
 }
 
 // Touch updates lastActive for a channel (e.g., on send_message).

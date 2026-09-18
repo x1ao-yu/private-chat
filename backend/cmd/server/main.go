@@ -25,6 +25,8 @@ func main() {
 
 	// P4: room expiration — single-instance, in-memory only, restart drops state.
 	// Empty rooms 10m, idle rooms 24h. Sweep every 1m. Log only count + channelIds (no peer-id/payload).
+	// The same sweep reclaims expired rate-limit windows, which per-connection
+	// cleanup on disconnect would otherwise leave behind during long sessions.
 	go func() {
 		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
@@ -33,6 +35,7 @@ func main() {
 			if len(expired) > 0 {
 				log.Printf("expired %d channels", len(expired))
 			}
+			srv.CleanupRateLimits()
 		}
 	}()
 
