@@ -7,5 +7,8 @@ dist/
 frontend/dist/
 frontend/node_modules/
 backend/tmp/
-# agent working plans / scratch
+# Qoder agent artifacts. Only plans/ is ignored on purpose: the rest of .qoder/
+# holds shareable project config (e.g. .qoder/repowiki/wiki_plan.yaml), which should stay tracked.
+.qoder/plans/
+# Zcode agent plans
 .zcode/
