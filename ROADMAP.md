@@ -71,13 +71,19 @@
 
 ## P9 — Productization
 
-* [ ] Mobile UX
+* [x] Mobile UX
 * [ ] PWA
 * [ ] Performance
-* [ ] Deployment
-* [ ] Abuse protection
+* [x] Deployment
+* [ ] Abuse protection (rate limits + WS origin verification landed and tested; no moderation or reporting tooling)
 * [ ] Security audit preparation
 
 ## Current
 
-**P7**
+**P7 is closed as "evaluate and defer"** — see `docs/mls-evaluation.md`; group key management,
+forward secrecy and post-compromise security stay deferred until one of its unlock conditions holds.
+
+**P9 is in progress** — Mobile UX and Deployment shipped; the abuse-protection controls that
+P5 claimed (per-IP limits and the member cap) were only made effective together with WebSocket
+origin verification, so that item is annotated rather than checked. PWA, Performance and
+security-audit preparation are not started. P8 is untouched.
