@@ -269,7 +269,7 @@ export type UnwrappedNick = {
   nick: string;
   /** identity public key (43-char base64url) when the claim is signed, else null (legacy client) */
   pk: string | null;
-  /** Ed25519 signature (base64url) over "identity-v1|nick|<channelId>|<nick>", else null */
+  /** Ed25519 signature (base64url) over the identity-v2 nick frame, else null */
   sig: string | null;
 };
 

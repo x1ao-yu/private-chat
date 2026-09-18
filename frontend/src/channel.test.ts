@@ -394,7 +394,7 @@ describe("identity: signed messages (P6)", () => {
       t: string; v: number; text: string; nick: string; pk: string; sig: string;
     };
     expect(inner.t).toBe("msg");
-    expect(inner.v).toBe(1);
+    expect(inner.v).toBe(2);
     expect(inner.text).toBe("signed hello");
     expect(inner.nick).toBe("self-nick");
     expect(inner.pk).toBe(identity!.pubB64);
@@ -443,6 +443,45 @@ describe("identity: signed messages (P6)", () => {
     expect(m.payload).toBe("⚠️ invalid signature");
     expect(m.ident?.status).toBe("invalid");
     expect(store.error).toBe("invalid signature");
+    store.disconnect();
+  });
+
+  it("surfaces a stale identity-v1 claim instead of dropping it", async () => {
+    const crypto = await makeCrypto();
+    const peer = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    const mid = newMessageIdB64();
+    // a pre-v2 client's signed message: same shape, inner version 1
+    const inner = await wrapSignedMessage(peer, CH, mid, "hi", "alice");
+    const v1 = JSON.stringify({ ...(JSON.parse(inner) as object), v: 1 });
+    ws.simulateMessage(msgFrame(CH, await crypto.encrypt(v1, { messageIdB64: mid })));
+    await tick();
+    const m = store.messages[0];
+    expect(m.payload).toBe("⚠️ stale signature — refresh to upgrade");
+    expect(m.ident?.status).toBe("invalid");
+    expect(m.ident?.fp).toBe(peer.fp);
+    // the unvalidated v1 nick must never reach the identity layer
+    expect(m.ident?.nick).toBeUndefined();
+    expect(store.error).toBe("stale signature (identity-v1 no longer accepted)");
+    store.disconnect();
+  });
+
+  it("does not let a stale v1 claim poison the TOFU pin", async () => {
+    const crypto = await makeCrypto();
+    const peer = await generateIdentity();
+    const mallory = await generateIdentity();
+    const { store, ws } = await openStore(CH, crypto);
+    const mid = newMessageIdB64();
+    const inner = await wrapSignedMessage(peer, CH, mid, "hi", "alice");
+    ws.simulateMessage(
+      msgFrame(CH, await crypto.encrypt(JSON.stringify({ ...(JSON.parse(inner) as object), v: 1 }), { messageIdB64: mid })),
+    );
+    await tick();
+    // if the stale claim had pinned "alice" -> peer.fp, this valid claim would
+    // be reported as a conflict; a fresh claimant must verify cleanly
+    ws.simulateMessage(await peerSignedFrame(crypto, mallory, "hi", "alice"));
+    await tick();
+    expect(store.messages[1].ident?.status).toBe("verified");
     store.disconnect();
   });
 

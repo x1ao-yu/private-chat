@@ -20,6 +20,7 @@ import {
   isIdentityAvailable,
   isUnknownStructuredPayload,
   parseSignedMessage,
+  staleSignedMessagePk,
   verifySignedMessage,
   verifySignedNick,
   wrapSignedMessage,
@@ -93,6 +94,10 @@ export async function createChannel(): Promise<string> {
 
 /** Identity state of a signed message after receive-side verification (P6, per-room TOFU). */
 export type IdentStatus = "verified" | "invalid" | "conflict";
+
+/** Surfaced instead of silently dropping a message signed with the malleable identity-v1 encoding. */
+const STALE_SIGNATURE_TEXT = "⚠️ stale signature — refresh to upgrade";
+
 export type MessageIdent = {
   fp: string;
   nick?: string;
@@ -215,8 +220,9 @@ export class ChannelStore {
           let ignored = false;
           try {
             const plain = await this.crypto.decrypt(msg.payload);
-            // P6: signed inner JSON {t:"msg",...}; legacy raw text passes through untouched
+            // P6: signed inner JSON {t:"msg",v:2,...}; legacy raw text passes through untouched
             const parsed = parseSignedMessage(plain);
+            const stalePk = parsed ? null : staleSignedMessagePk(plain);
             if (parsed) {
               if (await verifySignedMessage(this.channelId, mid ?? "", parsed)) {
                 ident = this.recordIdentity(parsed);
@@ -227,6 +233,14 @@ export class ChannelStore {
                 payload = "⚠️ invalid signature";
                 this.error = "invalid signature";
               }
+            } else if (stalePk) {
+              // identity-v1 signatures are malleable across the nick/text boundary,
+              // so a v1 claim can never be trusted as verified. Surface it rather
+              // than dropping silently (P6 "no silent degradation"); the claimed nick
+              // is deliberately not carried, and no TOFU pin is recorded.
+              ident = { fp: fpOf(stalePk), pk: stalePk, status: "invalid" };
+              payload = STALE_SIGNATURE_TEXT;
+              this.error = "stale signature (identity-v1 no longer accepted)";
             } else if (isUnknownStructuredPayload(plain)) {
               // structured inner payload from an unknown client version (or a
               // malformed protocol-internal format): ignore entirely, never

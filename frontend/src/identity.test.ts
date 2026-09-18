@@ -9,6 +9,7 @@ import {
   messageSigData,
   wrapSignedMessage,
   parseSignedMessage,
+  staleSignedMessagePk,
   verifySignedMessage,
   nickSigData,
   wrapSignedNick,
@@ -114,7 +115,13 @@ describe("signed message wrap/parse (P6)", () => {
   });
 
   it("messageSigData is stable and includes all binding parts", () => {
-    expect(messageSigData(CH, MID, "alice", "hi")).toBe(`identity-v1|${CH}|${MID}|alice|hi`);
+    expect(messageSigData(CH, MID, "alice", "hi")).toBe(`identity-v2|msg|${CH}|${MID}|5:alice|2:hi`);
+  });
+
+  it("wrapSignedMessage emits an inner v2 payload", async () => {
+    const id = await makeIdentity();
+    const inner = await wrapSignedMessage(id, CH, MID, "hi", "alice");
+    expect((JSON.parse(inner) as { v: number }).v).toBe(2);
   });
 
   it("parseSignedMessage returns null for legacy or malformed plaintexts", () => {
@@ -123,16 +130,73 @@ describe("signed message wrap/parse (P6)", () => {
     expect(parseSignedMessage("{not json")).toBeNull();
     expect(parseSignedMessage('{"t":"room_name","v":1,"name":"x"}')).toBeNull();
     expect(parseSignedMessage(
-      JSON.stringify({ t: "msg", v: 1, text: "x", nick: "a", pk: "A".repeat(42), sig: "AAAA" }),
+      JSON.stringify({ t: "msg", v: 2, text: "x", nick: "a", pk: "A".repeat(42), sig: "AAAA" }),
     )).toBeNull(); // pk not 43 chars
   });
 
   it("parseSignedMessage rejects invalid nick claims", () => {
     const inner = JSON.stringify({
-      t: "msg", v: 1, text: "x", nick: "way too long nick for the limit!!", pk: "A".repeat(43), sig: "B".repeat(86),
+      t: "msg", v: 2, text: "x", nick: "way too long nick for the limit!!", pk: "A".repeat(43), sig: "B".repeat(86),
     });
     expect(parseSignedMessage(inner)).toBeNull();
     expect(isValidNick("a\nb")).toBe(false);
+  });
+
+  it("parseSignedMessage rejects stale v1 signed claims", async () => {
+    const id = await makeIdentity();
+    const v2 = await wrapSignedMessage(id, CH, MID, "hi", "alice");
+    const v1 = JSON.stringify({ ...JSON.parse(v2) as object, v: 1 });
+    expect(parseSignedMessage(v1)).toBeNull();
+  });
+});
+
+describe("stale identity-v1 detection (audit 2026-09-18)", () => {
+  const pk = "A".repeat(43);
+  const sig = "B".repeat(86);
+
+  it("returns the claimed pk for a well-formed v1 signed claim", () => {
+    expect(staleSignedMessagePk(JSON.stringify({ t: "msg", v: 1, text: "x", nick: "a", pk, sig }))).toBe(pk);
+  });
+
+  it("returns null for current v2 claims", async () => {
+    const id = await makeIdentity();
+    expect(staleSignedMessagePk(await wrapSignedMessage(id, CH, MID, "x", "a"))).toBeNull();
+  });
+
+  it("returns null for legacy text, non-JSON, other types and malformed claims", () => {
+    expect(staleSignedMessagePk("plain legacy text")).toBeNull();
+    expect(staleSignedMessagePk("{not json")).toBeNull();
+    expect(staleSignedMessagePk('{"t":"room_name","v":1,"name":"x"}')).toBeNull();
+    expect(staleSignedMessagePk(JSON.stringify({ t: "msg", v: 1, text: "x", nick: "a" }))).toBeNull(); // unsigned
+    expect(staleSignedMessagePk(JSON.stringify({ t: "msg", v: 1, text: "x", nick: "a", pk, sig: "!!" }))).toBeNull();
+    expect(staleSignedMessagePk(JSON.stringify({ t: "msg", v: 1, text: "x", nick: "a", pk: "short", sig }))).toBeNull();
+  });
+});
+
+describe("signature canonicalization (audit 2026-09-18 regression)", () => {
+  // Root cause of the audit finding: v1 joined untrusted fields with "|", so a
+  // room-key holder could re-split one valid signature across the nick/text
+  // boundary and still verify. These tests must fail against identity-v1.
+  it("rejects a re-framed nick/text split of a valid signature", async () => {
+    const id = await makeIdentity();
+    const sig = await signIdentity(id.privateKey, messageSigData(CH, MID, "Alice", "meet at 9|room 3"));
+    const forged = { text: "room 3", nick: "Alice|meet at 9", pk: id.pubB64, sig };
+    expect(isValidNick(forged.nick)).toBe(true); // the forged nick passes field validation
+    await expect(verifySignedMessage(CH, MID, forged)).resolves.toBe(false);
+  });
+
+  it("messageSigData is injective across the nick/text boundary", () => {
+    expect(messageSigData(CH, MID, "Alice", "meet at 9|room 3")).not.toBe(
+      messageSigData(CH, MID, "Alice|meet at 9", "room 3"),
+    );
+    expect(messageSigData(CH, MID, "a", "|3:bc")).not.toBe(messageSigData(CH, MID, "a|3:b", "c"));
+  });
+
+  it("length prefixes count UTF-8 bytes, not UTF-16 code units", () => {
+    // thumbs-up is 2 UTF-16 units but 4 UTF-8 bytes
+    expect(messageSigData(CH, MID, "\u{1F44D}", "x")).toContain("4:\u{1F44D}");
+    // decomposed vs precomposed accents must not collide
+    expect(messageSigData(CH, MID, "e\u0301", "x")).not.toBe(messageSigData(CH, MID, "é", "x"));
   });
 });
 
@@ -162,7 +226,7 @@ describe("signed nick wrap/verify (P6)", () => {
   });
 
   it("nickSigData is versioned and room-bound", () => {
-    expect(nickSigData(CH, "alice")).toBe(`identity-v1|nick|${CH}|alice`);
+    expect(nickSigData(CH, "alice")).toBe(`identity-v2|nick|${CH}|5:alice`);
   });
 
   it("returns an encrypted envelope, never plaintext (regression: nick leak)", async () => {

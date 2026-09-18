@@ -1,4 +1,7 @@
 // identity.ts — P6 anonymous session identity, Web Crypto Ed25519
+// Signed-data encoding is identity-v2: variable-length fields are UTF-8
+// length-prefixed so a signature cannot be re-split across field boundaries
+// (the identity-v1 flaw). v1 claims are detected and never trusted.
 // The keypair lives in tab memory only (like room keys): never persisted, never
 // sent to the server except the public key inside the E2EE payload — the server
 // still sees ciphertext only. It is a session identity by design: it disappears
@@ -23,9 +26,21 @@ export interface Identity {
   fp: string;
 }
 
-const IDENTITY_VERSION = "identity-v1";
+const IDENTITY_VERSION = "identity-v2";
 const FP_LEN = 10;
 const B64URL_RE = /^[A-Za-z0-9_-]+$/;
+
+const utf8 = new TextEncoder();
+
+/**
+ * Length-prefix a variable field so it cannot absorb the `|` field separator.
+ * Byte length (not UTF-16 code units) because the signature covers the UTF-8
+ * encoding of the frame. Without this, `("Alice", "a|b")` and `("Alice|a", "b")`
+ * produce the same signed string (identity-v1 flaw, fixed in v2).
+ */
+function frame(field: string): string {
+  return `${utf8.encode(field).length}:${field}`;
+}
 
 let ed25519Available: boolean | null = null;
 
@@ -116,9 +131,14 @@ export type SignedMessagePayload = {
   sig: string;
 };
 
-/** Canonical signed data: binds the identity to room, envelope messageId, claimed nick and text. */
+/**
+ * Canonical signed data: binds identity to room, envelope messageId, claimed
+ * nick and text. `channelId`/`messageIdB64` are charset-restricted so need no
+ * frame; `nick`/`text` are user-controlled and get length-prefixed. The `msg`
+ * tag domain-separates this from {@link nickSigData}.
+ */
 export function messageSigData(channelId: string, messageIdB64: string, nick: string, text: string): string {
-  return `${IDENTITY_VERSION}|${channelId}|${messageIdB64}|${nick}|${text}`;
+  return `${IDENTITY_VERSION}|msg|${channelId}|${messageIdB64}|${frame(nick)}|${frame(text)}`;
 }
 
 /** Inner plaintext for a signed chat message; the caller encrypts it with the room key. */
@@ -130,13 +150,14 @@ export async function wrapSignedMessage(
   nick: string,
 ): Promise<string> {
   const sig = await signIdentity(identity.privateKey, messageSigData(channelId, messageIdB64, nick, text));
-  return JSON.stringify({ t: "msg", v: 1, text, nick, pk: identity.pubB64, sig });
+  return JSON.stringify({ t: "msg", v: 2, text, nick, pk: identity.pubB64, sig });
 }
 
 /**
  * Parse an inner message plaintext. Returns null for anything that is not a
- * signed message JSON (e.g. legacy raw text from clients without identity) —
- * callers render the plaintext as-is in that case.
+ * signed v2 message (e.g. legacy raw text from clients without identity, or a
+ * stale v1 envelope) — callers handle those via {@link staleSignedMessagePk}
+ * and then render the plaintext as-is.
  */
 export function parseSignedMessage(plain: string): SignedMessagePayload | null {
   if (!plain.startsWith("{")) return null;
@@ -148,7 +169,7 @@ export function parseSignedMessage(plain: string): SignedMessagePayload | null {
   }
   if (!obj || typeof obj !== "object") return null;
   const o = obj as Record<string, unknown>;
-  if (o.t !== "msg" || o.v !== 1) return null;
+  if (o.t !== "msg" || o.v !== 2) return null;
   if (typeof o.text !== "string") return null;
   if (typeof o.nick !== "string" || !isValidNick(o.nick)) return null;
   if (typeof o.pk !== "string" || !isIdentityPubB64(o.pk)) return null;
@@ -162,6 +183,32 @@ export async function verifySignedMessage(
   m: SignedMessagePayload,
 ): Promise<boolean> {
   return verifyIdentity(m.pk, m.sig, messageSigData(channelId, messageIdB64, m.nick, m.text));
+}
+
+/**
+ * Recognize an identity-v1 signed message and return its claimed public key.
+ *
+ * v1 joined `nick` and `text` with an unescaped `|`, so one valid v1 signature
+ * could be re-split into a different (nick, text) pair by anyone holding the
+ * room key. v1 claims are therefore never trusted as verified; callers surface
+ * them as an explicit "upgrade your client" state rather than silently
+ * dropping them. Returns null for anything that is not a well-formed v1 claim,
+ * including legacy unsigned raw text.
+ */
+export function staleSignedMessagePk(plain: string): string | null {
+  if (!plain.startsWith("{")) return null;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(plain);
+  } catch {
+    return null;
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const o = obj as Record<string, unknown>;
+  if (o.t !== "msg" || o.v !== 1) return null;
+  if (typeof o.sig !== "string" || !B64URL_RE.test(o.sig)) return null;
+  if (typeof o.pk !== "string" || !isIdentityPubB64(o.pk)) return null;
+  return o.pk;
 }
 
 /**
@@ -186,7 +233,7 @@ export function isUnknownStructuredPayload(plain: string): boolean {
 
 /** Canonical signed data for a nick claim: binds the identity to room and nick. */
 export function nickSigData(channelId: string, nick: string): string {
-  return `${IDENTITY_VERSION}|nick|${channelId}|${nick}`;
+  return `${IDENTITY_VERSION}|nick|${channelId}|${frame(nick)}`;
 }
 
 /**
@@ -203,6 +250,11 @@ export async function wrapSignedNick(
   const n = nick.trim();
   if (!isValidNick(n)) throw new Error("invalid nick (1-20 chars, no newline)");
   const sig = await signIdentity(identity.privateKey, nickSigData(channelId, n));
+  // Inner JSON stays v:1 on purpose: `unwrapNick` is the shared receive parser for
+  // both signed and unsigned nick claims, and the trust decision here is carried by
+  // the signature encoding (identity-v2 framing), not by this field. A pre-v2 signed
+  // nick therefore fails `verifySignedNick` and is dropped visibly, which is the
+  // behaviour we want; bumping v would instead reject well-formed unsigned claims.
   return crypto.encrypt(JSON.stringify({ t: "nick", v: 1, nick: n, pk: identity.pubB64, sig }));
 }
 
