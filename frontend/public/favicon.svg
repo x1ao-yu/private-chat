@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Private Chat">
+  <rect width="32" height="32" rx="7" fill="#18181b"/>
+  <rect x="7" y="8" width="18" height="12" rx="3" fill="#fafafa"/>
+  <path d="M11 19.5v4.2a.8.8 0 0 0 1.3.6L17 20z" fill="#fafafa"/>
+  <rect x="13.1" y="13" width="5.8" height="4.2" rx="1.1" fill="#18181b"/>
+  <path d="M14.4 13v-1.1a1.6 1.6 0 0 1 3.2 0V13" fill="none" stroke="#18181b" stroke-width="1.15" stroke-linecap="round"/>
+</svg>

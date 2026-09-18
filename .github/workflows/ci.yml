@@ -14,7 +14,9 @@ jobs:
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 10
+          # keep in sync with frontend/Dockerfile; a drifting package manager
+          # silently changes resolution between CI and the shipped image
+          version: 10.30.1
 
       - uses: actions/setup-node@v4
         with:
@@ -31,7 +33,9 @@ jobs:
         run: pnpm --dir frontend install --frozen-lockfile
 
       - name: Install go-jsonschema
-        run: go install github.com/atombender/go-jsonschema@latest
+        # pinned: `make check-generate` is a diff gate, so a floating generator
+        # version would fail CI the day upstream changes its output format
+        run: go install github.com/atombender/go-jsonschema@v0.24.1
 
       - name: Check generated protocol
         run: make check-generate
