@@ -21,21 +21,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           # keep in sync with frontend/Dockerfile; a drifting package manager
           # silently changes resolution between CI and the shipped image
           version: 10.30.1
 
+      # Held at v4 deliberately (dependabot PR #4 not applied): v5+ changed how
+      # package-manager caching is resolved, and this repo depends on the explicit
+      # `cache: pnpm` + `cache-dependency-path` pair below. That could not be
+      # confirmed from the release notes, and unlike the other three bumps it is
+      # not verifiable locally. Bump it only after one CI run proves the pnpm
+      # cache still resolves; if it silently stops caching, revert to v4.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache-dependency-path: backend/go.sum
@@ -71,19 +77,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10.30.1
 
+      # v4 on purpose — see the note on the same step in the `ci` job.
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.25"
           cache-dependency-path: backend/go.sum
@@ -107,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # build both images (no push — no registry configured); keeps the
       # Dockerfiles and nginx config from rotting
