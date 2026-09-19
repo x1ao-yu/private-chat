@@ -66,9 +66,10 @@ make dev-backend
 ```bash
 make generate        # regenerate TS/Go from schema.json
 make check-generate  # CI: verify generated files are up-to-date
-make test            # tsc + vitest + go vet + go test
+make test            # tsc + vitest + go vet + go test -race
+make lint            # gofmt check + go vet + tsc
+make fmt             # rewrite Go sources with gofmt
 make build           # vite build + go build
-make lint            # tsc + go vet
 ```
 
 ## Deployment

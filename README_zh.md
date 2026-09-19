@@ -66,9 +66,10 @@ make dev-backend
 ```bash
 make generate        # 从 schema.json 重新生成 TS/Go 代码
 make check-generate  # CI：校验生成的文件是否为最新
-make test            # tsc + vitest + go vet + go test
+make test            # tsc + vitest + go vet + go test -race
+make lint            # gofmt 检查 + go vet + tsc
+make fmt             # 用 gofmt 就地格式化 Go 源码
 make build           # vite build + go build
-make lint            # tsc + go vet
 ```
 
 ## 部署
