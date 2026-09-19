@@ -7,11 +7,14 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# A newer push to the same ref makes in-flight runs obsolete; cancel them instead
-# of paying for a pipeline nobody will read.
+# A newer push to the same PR makes its in-flight run obsolete, so cancel it.
+# main is excluded: when several dependabot PRs are merged back-to-back, each
+# squash-merge produces a new main state that is only validated by a main run
+# (each PR's own CI ran against an older base). Cancelling those would leave
+# untested combinations on main and hide the first broken one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   ci:
