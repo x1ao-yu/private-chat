@@ -813,7 +813,7 @@ func TestClientIP(t *testing.T) {
 		return r
 	}
 
-	direct := &Server{}                 // default: never believe client headers
+	direct := &Server{} // default: never believe client headers
 	behindProxy := &Server{trustXFF: true}
 
 	tests := []struct {

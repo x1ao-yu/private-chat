@@ -1,0 +1,17 @@
+# Normalize line endings: LF in the repository AND in the working tree.
+# Without this, core.autocrlf=true on Windows checks text files out as CRLF, which
+# makes `make check-generate` report phantom modifications (the generator writes LF)
+# and makes `gofmt -l` flag every Go file for the wrong reason.
+* text=auto eol=lf
+
+# Never line-ending convert real binaries.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.gz binary
+*.zip binary
