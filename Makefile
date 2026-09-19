@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 export PATH := $(HOME)/go/bin:$(HOME)/.local/go/bin:$(PATH)
 
-.PHONY: generate check-generate dev-frontend dev-backend build test lint
+.PHONY: generate check-generate dev-frontend dev-backend build test lint fmt fmt-check
 
 generate:
 	@echo "Generating protocol types from protocol/schema.json..."
@@ -27,9 +27,19 @@ test:
 	pnpm -C frontend exec tsc --noEmit
 	pnpm -C frontend exec vitest run
 	cd backend && go vet ./...
-	cd backend && go test ./... -count=1
+	cd backend && go test ./... -race -count=1
 
-lint:
-	pnpm -C frontend exec tsc --noEmit
+# gofmt -l doubles as a formatting gate. It is only trustworthy because
+# .gitattributes pins LF — under the old core.autocrlf checkout it flagged every
+# file for line endings and was useless.
+fmt-check:
+	@out=$$(cd backend && gofmt -l .); \
+	if [ -n "$$out" ]; then echo "not gofmt-clean:"; echo "$$out"; exit 1; fi
+
+fmt:
+	cd backend && gofmt -w .
+
+lint: fmt-check
 	cd backend && go vet ./...
-	@echo "lint ok (tsc + go vet)"
+	pnpm -C frontend exec tsc --noEmit
+	@echo "lint ok (gofmt + go vet + tsc)"

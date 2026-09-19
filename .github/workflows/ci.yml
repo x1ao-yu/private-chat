@@ -5,10 +5,18 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+# A newer push to the same ref makes in-flight runs obsolete; cancel them instead
+# of paying for a pipeline nobody will read.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   ci:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -40,17 +48,61 @@ jobs:
       - name: Check generated protocol
         run: make check-generate
 
-      - name: Test
+      # Static checks first: they are the cheapest way to fail.
+      - name: Lint (gofmt + go vet + tsc)
+        run: make lint
+
+      # `make test` runs the Go suite under -race. The concurrency test in
+      # manager_test.go exists to pin the maxMembers check-then-act fix, and a
+      # data race it cannot see would otherwise pass silently.
+      - name: Test (vitest + go test -race)
         run: make test
 
       - name: Build
         run: make build
 
-      - name: Lint
-        run: make lint
+  # Advisory, deliberately non-blocking: an upstream disclosure in an unrelated
+  # transitive package must not lock a PR, but it should be visible. Once the
+  # backlog is clean, drop the continue-on-error markers to make it a gate.
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache-dependency-path: backend/go.sum
+
+      - name: Install frontend deps
+        run: pnpm --dir frontend install --frozen-lockfile --ignore-scripts
+
+      - name: Audit npm dependencies
+        continue-on-error: true
+        run: pnpm --dir frontend audit --prod --audit-level=high
+
+      - name: Audit Go modules (govulncheck)
+        # floating on purpose, unlike go-jsonschema above: this is a scanner whose
+        # value is its advisory database, and its output is not a diff gate
+        continue-on-error: true
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          cd backend && govulncheck ./...
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
