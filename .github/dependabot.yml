@@ -26,6 +26,14 @@ updates:
     # low on purpose: with exact pins and a frozen lockfile, a big backlog of open
     # bumps never gets worked off, it just clutters the PR list
     open-pull-requests-limit: 3
+    ignore:
+      # @types/node must track the runtime actually used by frontend/Dockerfile
+      # (node:24-alpine) and CI (node-version: 24). A newer @types/node lets source
+      # code typecheck against APIs the runtime does not have. Bump it together
+      # with the runtime, never as a standalone dependency update.
+      - dependency-name: "@types/node"
+        update-types:
+          - version-update:semver-major
     commit-message:
       prefix: "chore(deps)"
     groups:
