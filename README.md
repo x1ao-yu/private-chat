@@ -26,6 +26,7 @@ frontend/src/
   invite.ts         # invite-link / hash-key parsing (pure functions, P3)
   channel.svelte.ts # UI state (Svelte runes), replay dedup + key_updated handling + identity verify (TOFU)
   App.svelte        # routes / and /r/:id, in-memory keys + session identity + Rotate & share / Rotate locally
+  *.test.ts         # Vitest suites: e2ee / identity / channel / transport / codec / invite / app (incl. App.svelte component tests)
   protocol.gen.ts   # generated, do not edit
 
 backend/
@@ -72,6 +73,20 @@ make fmt             # rewrite Go sources with gofmt
 make build           # vite build + go build
 ```
 
+## Testing & CI
+
+`make test` runs `tsc`, Vitest (7 suites: unit tests plus component-level
+tests for `App.svelte` using the native Svelte `mount()` — covering hash-key
+stripping, bare-key rejection before any network I/O, rotation, navigation
+and forms), `go vet` and `go test -race`.
+
+CI (`.github/workflows/ci.yml`) gates every push: `check-generate` →
+`lint` → `test -race` → `build`, plus a Docker compose build smoke test.
+Dependency scanning is a **gate, not advisory**: `pnpm audit --prod`
+(runtime deps only) and `govulncheck@v1.7.0` (pinned; vulnerability DB is
+live) must both report zero findings — a newly published CVE turns `main`
+red until dependencies or the Go toolchain are patched.
+
 ## Deployment
 
 ```bash
@@ -113,7 +128,7 @@ docker compose up --build --detach   # nginx :80 → static assets + /ws + /heal
 Client → Server: `create_channel`, `join_channel`, `leave_channel`, `send_message`, `key_update` (E2EE-wrapped new key)
 Server → Client: `channel_created`, `joined`, `left`, `message`, `key_updated`, `online_count`, `error`
 
-`message.from` is an ephemeral connection ID (`peer-` + 4B random per WebSocket, regenerated on reconnect, `backend/internal/ws/transport.go`) — **not** a stable identity. Since P6, sender attribution comes from the Ed25519 session identity inside the encrypted payload. No history is persisted (relay-only, `backend/internal/channel/manager.go`); rejoin does not replay. Minimal `rate_limited` (`create 5/min per-IP+per-conn`, `send 10/s per-conn`).
+`message.from` is an ephemeral connection ID (`peer-` + 4B random per WebSocket, regenerated on reconnect, `backend/internal/ws/transport.go`) — **not** a stable identity. Since P6, sender attribution comes from the Ed25519 session identity inside the encrypted payload. No history is persisted (relay-only, `backend/internal/channel/manager.go`); rejoin does not replay. Exceeding a limit returns `error rate_limited`; the current full set (create/join/send budgets, member cap) is listed under Security Notes → Rate limiting.
 
 `payload` is now **ciphertext** `base64url(iv).base64url(messageId).base64url(ct+tag)` with `12B IV` never reused (`getRandomValues` per message) and `16B messageId` per message, `AAD = v1|channelId|messageId` binding room/version/message. Room key (P3) is per-room, `AES-GCM-256` via Web Crypto, held in tab memory only (a key imported from an invite is non-extractable; a freshly generated one is extractable only because it must be exported once into the invite link), plus an in-memory copy used solely to rebuild invite links, never sent to server. It travels only inside the invite-link hash `/r/{id}#k=`, which is stripped from the URL as soon as it is imported; SPA navigation never carries it. Import validates strict 43-char base64url; a bare key pasted into Join is rejected before any network request. No persistence by design: a refresh drops the key, rejoining requires re-pasting. See `frontend/src/e2ee.ts`, `frontend/src/invite.ts` and `protocol/schema.json`.
 

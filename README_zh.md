@@ -26,6 +26,7 @@ frontend/src/
   invite.ts         # 邀请链接 / hash 密钥解析（纯函数，P3）
   channel.svelte.ts # UI 状态（Svelte runes），重放去重 + key_updated 处理 + 身份验签（TOFU）
   App.svelte        # 路由 / 和 /r/:id，内存密钥 + 会话身份 + Rotate & share / Rotate locally
+  *.test.ts         # Vitest 测试套件：e2ee / identity / channel / transport / codec / invite / app（含 App.svelte 组件测试）
   protocol.gen.ts   # 自动生成，请勿手动编辑
 
 backend/
@@ -72,6 +73,18 @@ make fmt             # 用 gofmt 就地格式化 Go 源码
 make build           # vite build + go build
 ```
 
+## 测试与 CI
+
+`make test` 依次执行 `tsc`、Vitest（7 套件：单元测试 + 使用 Svelte 原生
+`mount()` 的 `App.svelte` 组件级测试——覆盖 hash 密钥剥离、发起任何网络请求
+前拦截裸密钥、轮换、导航与表单）、`go vet` 与 `go test -race`。
+
+CI（`.github/workflows/ci.yml`）对每次推送设门禁：`check-generate` →
+`lint` → `test -race` → `build`，外加 docker compose 构建冒烟。依赖扫描是
+**门禁而非 advisory**：`pnpm audit --prod`（仅运行时依赖）与
+`govulncheck@v1.7.0`（钉版本；漏洞库实时更新）必须均为零发现——新公开的
+CVE 会把 `main` 跑红，直到升级依赖或 Go 工具链补丁。
+
 ## 部署
 
 ```bash
@@ -90,7 +103,7 @@ docker compose up --build --detach   # nginx :80 → 静态资源 + /ws + /healt
 客户端 → 服务端：`create_channel`、`join_channel`、`leave_channel`、`send_message`、`key_update`（E2EE 封装新钥）
 服务端 → 客户端：`channel_created`、`joined`、`left`、`message`、`key_updated`、`online_count`、`error`
 
-`message.from` 是临时的连接 ID（`peer-` + 每个 WebSocket 连接 4 字节随机数，重连时重新生成，见 `backend/internal/ws/transport.go`）——**不是**稳定的身份标识。自 P6 起，发送者归属由加密载荷内的 Ed25519 会话身份提供。不持久化任何历史记录（仅中继，见 `backend/internal/channel/manager.go`）；重新加入不会重放历史消息。最小限度的 `rate_limited` 限流（`create 5次/分钟 每个IP+每个连接`，`send 10次/秒 每个连接`）。
+`message.from` 是临时的连接 ID（`peer-` + 每个 WebSocket 连接 4 字节随机数，重连时重新生成，见 `backend/internal/ws/transport.go`）——**不是**稳定的身份标识。自 P6 起，发送者归属由加密载荷内的 Ed25519 会话身份提供。不持久化任何历史记录（仅中继，见 `backend/internal/channel/manager.go`）；重新加入不会重放历史消息。超出限额返回 `error rate_limited`；当前完整限额见"安全说明 → 限流"。
 
 `payload` 现为**密文**，格式为 `base64url(iv).base64url(messageId).base64url(ct+tag)`，其中 `12B IV` 永不重用（每条消息通过 `getRandomValues` 生成）、每条消息对应 `16B messageId`，`AAD = v1|channelId|messageId` 用于绑定房间/版本/消息。房间密钥（P3）按房间隔离，通过 Web Crypto 使用 `AES-GCM-256`，仅存于标签页内存（从邀请导入的密钥不可导出；新生成的密钥之所以可导出，仅仅是为了把它一次性写进邀请链接），另有一份内存副本专用于重组邀请链接，永不发送到服务端。密钥仅经由邀请链接 hash `/r/{id}#k=` 传输一次，导入后立即从 URL 剥离；SPA 导航不携带密钥。导入时执行严格的 43 字符 base64url 校验；粘贴到 Join 框的裸密钥会在发起任何网络请求前被拒绝。按设计无持久化：刷新即丢钥，重新加入需重新粘贴。详见 `frontend/src/e2ee.ts`、`frontend/src/invite.ts` 与 `protocol/schema.json`。
 
