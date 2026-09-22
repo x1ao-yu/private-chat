@@ -88,13 +88,20 @@
     path = window.location.pathname;
     pendingHashKey = parseKeyFromHash(window.location.hash);
   }
-  window.addEventListener("popstate", () => {
-    path = window.location.pathname;
-    pendingHashKey = parseKeyFromHash(window.location.hash);
-  });
-  window.addEventListener("hashchange", () => {
-    path = window.location.pathname;
-    pendingHashKey = parseKeyFromHash(window.location.hash);
+  // window listeners register inside $effect so unmount removes them — a bare
+  // addEventListener at init would pile up dangling handlers across the
+  // repeated mount/unmount cycles component tests perform
+  $effect(() => {
+    const sync = () => {
+      path = window.location.pathname;
+      pendingHashKey = parseKeyFromHash(window.location.hash);
+    };
+    window.addEventListener("popstate", sync);
+    window.addEventListener("hashchange", sync);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.removeEventListener("hashchange", sync);
+    };
   });
 
   let channelId = $derived(
