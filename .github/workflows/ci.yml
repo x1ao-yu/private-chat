@@ -68,9 +68,16 @@ jobs:
       - name: Build
         run: make build
 
-  # Advisory, deliberately non-blocking: an upstream disclosure in an unrelated
-  # transitive package must not lock a PR, but it should be visible. Once the
-  # backlog is clean, drop the continue-on-error markers to make it a gate.
+  # Gate: a red scan blocks the run. Rationale for each boundary:
+  # - npm audits only --prod (runtime deps ship; devDeps like vitest/jsdom never
+  #   reach users, so their advisories must not block a merge).
+  # - govulncheck is pinned (unlike go-jsonschema, where the pin protects a diff
+  #   gate's output): here the pin makes the *scanner* reproducible, while its
+  #   advisory database is still fetched live — so a newly disclosed CVE fails
+  #   main until the toolchain/deps are bumped. That failure is the point of the
+  #   gate; fix by upgrading Go (go-version below floats on the 1.25 patch line)
+  #   or the module. v1.7.0 is the newest release whose go.mod still builds with
+  #   this repo's Go 1.25 (v1.8.0 requires Go >= 1.26).
   scan:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -96,15 +103,11 @@ jobs:
         run: pnpm --dir frontend install --frozen-lockfile --ignore-scripts
 
       - name: Audit npm dependencies
-        continue-on-error: true
         run: pnpm --dir frontend audit --prod --audit-level=high
 
       - name: Audit Go modules (govulncheck)
-        # floating on purpose, unlike go-jsonschema above: this is a scanner whose
-        # value is its advisory database, and its output is not a diff gate
-        continue-on-error: true
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
           cd backend && govulncheck ./...
 
   docker:
