@@ -86,12 +86,14 @@ Real gaps between today's relay and an MLS-grade ordering server (facts, with re
    map iteration is randomized; there is no sequencing. Two concurrent Commits can reach
    different members in different orders → group divergence. MLS needs a single order per
    room (server-side per-room sequencing, or a client epoch-guard that is only sound under a
-   common order). Backend facts: `transport.go` broadcast loops (186-203 etc.), no sequence
+   common order). Backend facts: per-recipient broadcast loops in the `SendMessage` / `KeyUpdate`
+   / `SetRoomName` / `SetNickname` cases of `transport.go` (`Server.Handler`), no sequence
    numbers, failed writes silently dropped.
 2. **Payload ceiling 8192 chars** (schema.json, all 8 payload defs + gen.go checks +
-   `codec.ts:87`). MLS KeyPackages/Commits/Welcome routinely exceed 8 KB for moderate group
-   sizes; would need a limit raise (WS read limit is 1 MiB, transport.go:51) and/or
-   chunked framing. Rate limits would need revisiting too.
+   the `payload too large` check in `codec.ts`). MLS KeyPackages/Commits/Welcome routinely
+   exceed 8 KB for moderate group sizes; would need a limit raise (WS read limit is 1 MiB,
+   `c.SetReadLimit(1 << 20)` in `transport.go`) and/or chunked framing. Rate limits would need
+   revisiting too.
 3. **KeyPackage single-use cannot be enforced server-side** (no storage, no identity). With
    in-band exchange it degrades to client-side best-effort; RFC 9750 §5.1 expects the DS to
    enforce single-use.

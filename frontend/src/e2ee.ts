@@ -60,7 +60,8 @@ export function extractMessageIdB64(payload: string): string | null {
   return parts[1] || null;
 }
 
-// Simple LRU dedup for replay protection (per-channel, in-memory)
+// Simple bounded FIFO dedup for replay protection (per-channel, in-memory).
+// Insertion-order eviction: has() does not refresh recency, so this is FIFO, not LRU.
 export class ReplayCache {
   private seen = new Set<string>();
   private queue: string[] = [];

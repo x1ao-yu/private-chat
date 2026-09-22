@@ -24,7 +24,7 @@ func main() {
 	mux.HandleFunc("/ws", srv.Handler)
 
 	// P4: room expiration — single-instance, in-memory only, restart drops state.
-	// Empty rooms 10m, idle rooms 24h. Sweep every 1m. Log only count + channelIds (no peer-id/payload).
+	// Empty rooms 10m, idle rooms 24h. Sweep every 1m. Log only the count (no channelIds/peer-id/payload).
 	// The same sweep reclaims expired rate-limit windows, which per-connection
 	// cleanup on disconnect would otherwise leave behind during long sessions.
 	go func() {
